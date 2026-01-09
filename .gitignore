@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+
+# Project specific
+whisper-server/venv/
+whisper-server/cache/
+whisper-server/temp/
+whisper-server/models/
+*.mp3
+*.m4a
+*.webm
+*.opus
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,48 @@
+{
+    "manifest_version": 3,
+    "name": "YouTube 实时字幕生成器",
+    "version": "1.0.0",
+    "description": "为没有字幕的YouTube视频实时生成字幕",
+    "permissions": [
+        "activeTab",
+        "storage",
+        "tabCapture",
+        "offscreen",
+        "scripting"
+    ],
+    "host_permissions": [
+        "https://www.youtube.com/*",
+        "https://youtube.com/*"
+    ],
+    "action": {
+        "default_popup": "popup.html",
+        "default_icon": {
+            "16": "icons/icon16.svg",
+            "48": "icons/icon48.svg",
+            "128": "icons/icon128.svg"
+        }
+    },
+    "icons": {
+        "16": "icons/icon16.svg",
+        "48": "icons/icon48.svg",
+        "128": "icons/icon128.svg"
+    },
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://www.youtube.com/*",
+                "https://youtube.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "css": [
+                "subtitles.css"
+            ],
+            "run_at": "document_end"
+        }
+    ]
+}

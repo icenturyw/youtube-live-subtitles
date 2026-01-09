@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube 字幕生成器</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+          <rect x="2" y="4" width="20" height="16" rx="3" stroke="currentColor" stroke-width="2" />
+          <path d="M6 14h4M12 14h6M6 18h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          <circle cx="12" cy="9" r="2" fill="currentColor" />
+        </svg>
+      </div>
+      <h1>YouTube 字幕生成器</h1>
+    </header>
+
+    <main>
+      <!-- 状态卡片 -->
+      <div class="status-card" id="statusCard">
+        <div class="status-indicator" id="statusIndicator"></div>
+        <span class="status-text" id="statusText">检查服务状态...</span>
+      </div>
+
+      <!-- 进度条 -->
+      <div class="progress-container" id="progressContainer" style="display: none;">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-text" id="progressText">准备中...</div>
+      </div>
+
+      <!-- 主控制按钮 -->
+      <button class="main-btn" id="generateBtn">
+        <span class="btn-icon">🎬</span>
+        <span class="btn-text">生成字幕</span>
+      </button>
+
+      <!-- 字幕控制（生成后显示） -->
+      <div class="subtitle-controls" id="subtitleControls" style="display: none;">
+        <button class="control-btn active" id="toggleSubtitleBtn">
+          <span>👁️</span> 显示字幕
+        </button>
+        <button class="control-btn" id="downloadBtn">
+          <span>💾</span> 下载 SRT
+        </button>
+      </div>
+
+      <!-- 设置面板 -->
+      <div class="settings-panel">
+        <h3>⚙️ 设置</h3>
+
+        <div class="setting-item">
+          <label for="language">视频语言</label>
+          <select id="language">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+            <option value="es">Español</option>
+            <option value="fr">Français</option>
+            <option value="de">Deutsch</option>
+            <option value="ru">Русский</option>
+            <option value="auto">自动检测</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <label for="whisperService">识别服务</label>
+          <select id="whisperService">
+            <option value="local">本地 Whisper (推荐)</option>
+            <option value="browser">浏览器内置 (需播放)</option>
+            <option value="openai">OpenAI Whisper API</option>
+          </select>
+        </div>
+
+        <div class="setting-item api-key-setting" id="apiKeySetting" style="display: none;">
+          <label for="apiKey">OpenAI API Key</label>
+          <input type="password" id="apiKey" placeholder="sk-...">
+        </div>
+
+        <div class="setting-item">
+          <label for="fontSize">字幕大小</label>
+          <input type="range" id="fontSize" min="16" max="36" value="24">
+          <span id="fontSizeValue">24px</span>
+        </div>
+
+        <div class="setting-item">
+          <label for="position">字幕位置</label>
+          <select id="position">
+            <option value="bottom">底部</option>
+            <option value="top">顶部</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- 提示信息 -->
+      <div class="tips">
+        <p>💡 <strong>使用本地 Whisper 服务：</strong></p>
+        <p>1. 运行 <code>whisper-server/start.bat</code></p>
+        <p>2. 等待服务启动后点击"生成字幕"</p>
+        <p>3. 自动下载音频并识别，无需播放视频</p>
+      </div>
+    </main>
+
+    <footer>
+      <p>Made with ❤️ for better accessibility</p>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+
+</html>

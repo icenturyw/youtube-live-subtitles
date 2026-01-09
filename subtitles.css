@@ -1,0 +1,100 @@
+/* YouTube 字幕样式 */
+#yt-custom-subtitle-container {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 80px;
+    z-index: 9999;
+    max-width: 90%;
+    text-align: center;
+    pointer-events: none;
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+    transition: opacity 0.2s ease;
+}
+
+#yt-custom-subtitle-text {
+    display: inline-block;
+    padding: 12px 24px;
+    background: rgba(0, 0, 0, 0.88);
+    color: #ffffff;
+    font-size: 24px;
+    font-weight: 500;
+    border-radius: 10px;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.95);
+    line-height: 1.5;
+    max-width: 100%;
+    word-wrap: break-word;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+    animation: subtitleFadeIn 0.2s ease-out;
+    letter-spacing: 0.5px;
+}
+
+#yt-custom-subtitle-text:empty {
+    display: none;
+}
+
+@keyframes subtitleFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* 全屏模式适配 */
+.ytp-fullscreen #yt-custom-subtitle-container {
+    bottom: 100px;
+}
+
+.ytp-fullscreen #yt-custom-subtitle-text {
+    font-size: 32px;
+    padding: 16px 32px;
+    border-radius: 12px;
+}
+
+/* 迷你播放器适配 */
+.ytp-player-minimized #yt-custom-subtitle-container {
+    bottom: 40px;
+}
+
+.ytp-player-minimized #yt-custom-subtitle-text {
+    font-size: 14px;
+    padding: 6px 12px;
+}
+
+/* 影院模式适配 */
+#player-theater-container #yt-custom-subtitle-container {
+    bottom: 90px;
+}
+
+/* 进度条悬停时上移字幕 */
+.ytp-progress-bar-container:hover~#yt-custom-subtitle-container,
+.ytp-chrome-bottom:hover~#yt-custom-subtitle-container {
+    bottom: 120px;
+    transition: bottom 0.3s ease;
+}
+
+/* 高对比度样式 */
+@media (prefers-contrast: high) {
+    #yt-custom-subtitle-text {
+        background: rgba(0, 0, 0, 0.95);
+        border: 2px solid white;
+    }
+}
+
+/* 减少动画 */
+@media (prefers-reduced-motion: reduce) {
+    #yt-custom-subtitle-text {
+        animation: none;
+    }
+
+    #yt-custom-subtitle-container {
+        transition: none;
+    }
+}
