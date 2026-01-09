@@ -20,6 +20,14 @@ try:
 except ImportError:
     HAS_LOCAL_WHISPER = False
 
+# MongoDB Support
+try:
+    import pymongo
+    from pymongo.errors import ConnectionFailure
+    HAS_MONGO = True
+except ImportError:
+    HAS_MONGO = False
+
 # 尝试导入 OpenCC 用于繁简转换
 try:
     from opencc import OpenCC
@@ -29,11 +37,16 @@ except ImportError:
 
 # ============ 配置 ============
 PORT = 8765
-MODEL_SIZE = "base"  # 可选: tiny, base, small, medium, large-v3
-DEVICE = "cpu"       # 如果有 NVIDIA 显卡并安装了 CUDA，可改为 "cuda"
-COMPUTE_TYPE = "int8" # cpu 推荐 int8, gpu 推荐 float16
+MODEL_SIZE = "large-v3"  # 可选: tiny, base, small, medium, large-v3
+DEVICE = "cuda"       # 如果有 NVIDIA 显卡并安装了 CUDA，可改为 "cuda"
+COMPUTE_TYPE = "float16" # cpu 推荐 int8, gpu 推荐 float16
 CPU_THREADS = 0      # 线程数，0 为自动。如果 CPU 使用率低，可以尝试设为 4, 8 或 16
 NUM_WORKERS = 4      # 工作进程数，增加此值可以提高并发处理能力
+
+# MongoDB 配置
+MONGO_URI = "mongodb+srv://youtube_live:MZJwO7LcdUd4x64a@cluster0.v91xaip.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+MONGO_DB_NAME = "youtube_subtitles"
+MONGO_COLLECTION_NAME = "videos"
 
 CACHE_DIR = Path("./cache")
 CACHE_DIR.mkdir(exist_ok=True)
@@ -45,8 +58,32 @@ TEMP_DIR.mkdir(exist_ok=True)
 tasks = {}
 whisper_model = None
 model_lock = threading.Lock()
+mongo_client = None
+mongo_collection = None
 
 # ============ 工具函数 ============
+def init_mongo():
+    global mongo_client, mongo_collection
+    if not HAS_MONGO:
+        return False
+    
+    try:
+        mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+        # 简单检查连接
+        mongo_client.admin.command('ping')
+        db = mongo_client[MONGO_DB_NAME]
+        mongo_collection = db[MONGO_COLLECTION_NAME]
+        # 创建索引以加速查询
+        mongo_collection.create_index("video_id", unique=True)
+        print(f"[MongoDB] 连接成功: {MONGO_URI} ({MONGO_DB_NAME}.{MONGO_COLLECTION_NAME})")
+        return True
+    except Exception as e:
+        print(f"[MongoDB] 连接失败: {e}")
+        print(f"[MongoDB] 将仅使用本地缓存模式运行")
+        mongo_client = None
+        mongo_collection = None
+        return False
+
 def get_video_id(url):
     patterns = [
         r'(?:v=|\/videos\/|embed\/|youtu.be\/|\/v\/|\/e\/|watch\?v=|&v=)([^#\&\?\n]*)',
@@ -58,22 +95,56 @@ def get_video_id(url):
     return hashlib.md5(url.encode()).hexdigest()[:11]
 
 def get_cached_subtitles(video_id):
+    # 1. 优先查本地文件
     cache_file = CACHE_DIR / f"{video_id}.json"
     if cache_file.exists():
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[Cache] 本地缓存读取错误: {e}")
+
+    # 2. 查 MongoDB
+    if mongo_collection is not None:
+        try:
+            doc = mongo_collection.find_one({"video_id": video_id}, {"_id": 0})
+            if doc:
+                print(f"[Cache] 命中 MongoDB 云端缓存: {video_id}")
+                # 顺便写回本地，下次就不用查库了
+                save_subtitles_cache(video_id, doc.get('subtitles'), doc.get('language'))
+                return doc
+        except Exception as e:
+            print(f"[MongoDB] 查询错误: {e}")
+            
     return None
 
 def save_subtitles_cache(video_id, subtitles, language):
-    cache_file = CACHE_DIR / f"{video_id}.json"
     data = {
         'video_id': video_id,
         'language': language,
         'created_at': datetime.now().isoformat(),
         'subtitles': subtitles
     }
-    with open(cache_file, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    # 1. 保存到本地
+    try:
+        cache_file = CACHE_DIR / f"{video_id}.json"
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[Cache] 本地写入失败: {e}")
+
+    # 2. 保存到 MongoDB
+    if mongo_collection is not None:
+        try:
+            mongo_collection.update_one(
+                {"video_id": video_id},
+                {"$set": data},
+                upsert=True
+            )
+            print(f"[MongoDB] 字幕已上传/更新: {video_id}")
+        except Exception as e:
+            print(f"[MongoDB] 写入失败: {e}")
 
 def update_task(task_id, status, progress, message, subtitles=None, language=None):
     tasks[task_id] = {
@@ -110,6 +181,8 @@ def download_audio(video_url, task_id):
         'yt-dlp',
         '-x', '--audio-format', 'mp3',
         '--audio-quality', '128K',
+        '--no-part',  # 直接写入文件，避免重命名时的 WinError 32 占用错误
+        '--force-overwrites', # 强制覆盖旧文件
         '-o', output_template,
         '--no-playlist',
         video_url
@@ -335,6 +408,10 @@ if __name__ == '__main__':
     print("=" * 50)
     print(f"服务地址: http://127.0.0.1:{PORT}")
     print(f"当前模型: {MODEL_SIZE} (运行在 {DEVICE})")
+    
+    # 初始化 MongoDB
+    init_mongo()
+    
     if not HAS_LOCAL_WHISPER:
         print("⚠ 错误: 未找到 faster-whisper 依赖!")
         print("  请先运行: pip install faster-whisper")
