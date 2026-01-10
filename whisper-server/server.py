@@ -1,6 +1,7 @@
 """
 YouTube 字幕生成 - 本地 Whisper 服务
 使用 faster-whisper 实现本地识别，无需外部 API
+支持单视频和播放列表批量处理 (队列模式)
 """
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -11,6 +12,7 @@ import hashlib
 import subprocess
 import threading
 import time
+import queue
 from pathlib import Path
 from datetime import datetime
 
@@ -41,12 +43,16 @@ MODEL_SIZE = "large-v3"  # 可选: tiny, base, small, medium, large-v3
 DEVICE = "cuda"       # 如果有 NVIDIA 显卡并安装了 CUDA，可改为 "cuda"
 COMPUTE_TYPE = "float16" # cpu 推荐 int8, gpu 推荐 float16
 CPU_THREADS = 0      # 线程数，0 为自动。如果 CPU 使用率低，可以尝试设为 4, 8 或 16
-NUM_WORKERS = 4      # 工作进程数，增加此值可以提高并发处理能力
+NUM_WORKERS = 4      # 模型内部工作进程数
 
-# MongoDB 配置
-MONGO_URI = "mongodb+srv://youtube_live:MZJwO7LcdUd4x64a@cluster0.v91xaip.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-MONGO_DB_NAME = "youtube_subtitles"
-MONGO_COLLECTION_NAME = "videos"
+# 任务队列配置
+MAX_CONCURRENT_TASKS = 1 # 同时进行的转录任务数 (建议为1，以免显存爆炸)
+task_queue = queue.Queue()
+
+# MongoDB 配置 (从环境变量读取，更安全)
+MONGO_URI = os.environ.get('MONGO_URI', 'mongodb+srv://youtube_live:MZJwO7LcdUd4x64a@cluster0.v91xaip.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
+MONGO_DB_NAME = os.environ.get('MONGO_DB_NAME', 'youtube_subtitles')
+MONGO_COLLECTION_NAME = os.environ.get('MONGO_COLLECTION_NAME', 'videos')
 
 CACHE_DIR = Path("./cache")
 CACHE_DIR.mkdir(exist_ok=True)
@@ -61,7 +67,7 @@ model_lock = threading.Lock()
 mongo_client = None
 mongo_collection = None
 
-# ============ 工具函数 ============
+# ============ 工具函数 ============ 
 def init_mongo():
     global mongo_client, mongo_collection
     if not HAS_MONGO:
@@ -153,7 +159,8 @@ def update_task(task_id, status, progress, message, subtitles=None, language=Non
         'progress': progress,
         'message': message,
         'subtitles': subtitles,
-        'detected_language': language
+        'detected_language': language,
+        'updated_at': time.time()
     }
 
 def get_model():
@@ -189,7 +196,7 @@ def download_audio(video_url, task_id):
     ]
     
     try:
-        # 增加超时时间到 10 分钟，以应对大型视频或慢速网络
+        # 增加超时时间到 10 分钟
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
             raise Exception(f"下载失败: {result.stderr}")
@@ -209,8 +216,6 @@ def transcribe_locally(audio_path, task_id, language):
     
     model = get_model()
     
-    # 开始转录，添加 vad_filter 帮助自然切分
-    # initial_prompt 引导模型输出简体中文
     segments, info = model.transcribe(
         audio_path, 
         language=None if not language or language == 'auto' else language,
@@ -226,19 +231,16 @@ def transcribe_locally(audio_path, task_id, language):
     subtitles = []
     
     def split_text(text, max_len=25):
-        # 转换繁体为简体
         if converter:
             text = converter.convert(text)
         
         if len(text) <= max_len:
             return [text]
         
-        # 优先按标点拆分
         parts = re.split(r'([，。！？, \.! \?])', text)
         result = []
         current = ""
         
-        # 如果只有一个部分（没有匹配到分隔符）
         if len(parts) == 1:
             current = parts[0]
         else:
@@ -251,26 +253,22 @@ def transcribe_locally(audio_path, task_id, language):
                     current += p
         
         if current:
-            # 强行按长度切分剩余部分
             while len(current) > max_len:
                 result.append(current[:max_len].strip())
                 current = current[max_len:]
             if current.strip():
                 result.append(current.strip())
         
-        return [r for r in result if r] or [text] # 兜底逻辑
+        return [r for r in result if r] or [text]
 
-    # segments 是一个生成器，需要遍历
     for segment in segments:
         text = segment.text.strip()
         if not text:
             continue
             
-        # 强制转换并根据长度拆分
         if converter:
             text = converter.convert(text)
             
-        # 如果单段内容太长，尝试逻辑拆分
         if len(text) > 25:
             split_parts = split_text(text)
             duration = segment.end - segment.start
@@ -289,21 +287,23 @@ def transcribe_locally(audio_path, task_id, language):
                 'text': text
             })
             
-        # 简单估算进度
         if len(subtitles) % 10 == 0:
              progress = min(98, 60 + (len(subtitles) / 10))
              update_task(task_id, 'transcribing', int(progress), f'已生成 {len(subtitles)} 条字幕...')
 
     return subtitles, detected_lang
 
-def process_video(video_url, task_id, language):
+def process_video_task(video_url, task_id, language):
+    """
+    单个视频处理逻辑，由 Worker 调用
+    """
     try:
         if not HAS_LOCAL_WHISPER:
-            raise Exception("本地 Whisper 依赖未安装。请运行: pip install faster-whisper")
+            raise Exception("本地 Whisper 依赖未安装")
             
         video_id = get_video_id(video_url)
         
-        # 检查缓存
+        # 再次检查缓存 (防止排队期间其他任务已生成)
         cached = get_cached_subtitles(video_id)
         if cached:
             update_task(task_id, 'completed', 100, '从缓存加载',
@@ -328,9 +328,100 @@ def process_video(video_url, task_id, language):
             os.remove(audio_path)
         
     except Exception as e:
+        print(f"[Error] 任务 {task_id} 失败: {e}")
         update_task(task_id, 'error', 0, str(e))
 
-# ============ HTTP 服务 ============
+def worker():
+    """
+    后台工作线程：不断从队列取任务执行
+    """
+    print(f"[Worker] 线程启动，等待任务...")
+    while True:
+        try:
+            # 阻塞等待任务
+            task = task_queue.get()
+            video_url = task['video_url']
+            task_id = task['task_id']
+            language = task.get('language')
+            
+            print(f"[Worker] 开始处理任务: {task_id} ({video_url})")
+            process_video_task(video_url, task_id, language)
+            
+            task_queue.task_done()
+            print(f"[Worker] 任务完成: {task_id}, 队列剩余: {task_queue.qsize()}")
+            
+        except Exception as e:
+            print(f"[Worker] 发生异常: {e}")
+
+def fetch_playlist_videos(playlist_url):
+    """
+    解析播放列表，返回视频列表 [{'id': '...', 'title': '...'}, ...] 
+    """
+    cmd = [
+        'yt-dlp',
+        '--flat-playlist',
+        '--dump-single-json',
+        playlist_url
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
+        if result.returncode != 0:
+            return []
+        data = json.loads(result.stdout)
+        
+        videos = []
+        if 'entries' in data:
+            for entry in data['entries']:
+                if entry.get('id'):
+                    videos.append({
+                        'id': entry['id'],
+                        'title': entry.get('title', 'Unknown'),
+                        'url': f"https://www.youtube.com/watch?v={entry['id']}"
+                    })
+        return videos
+    except Exception as e:
+        print(f"[Playlist] 解析错误: {e}")
+        return []
+
+def sync_local_cache_to_mongo():
+    """
+    启动时后台同步：将本地 cache 目录下的所有 json 同步到 MongoDB
+    """
+    if mongo_collection is None:
+        return
+    
+    print("[MongoDB] 开始扫描本地缓存并同步到云端...")
+    count = 0
+    try:
+        for file in CACHE_DIR.glob("*.json"):
+            video_id = file.stem
+            try:
+                # 检查云端是否已存在（只查 ID 以节省带宽）
+                if mongo_collection.find_one({"video_id": video_id}, {"_id": 1}):
+                    continue
+                
+                with open(file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                mongo_collection.update_one(
+                    {"video_id": video_id},
+                    {"$set": data},
+                    upsert=True
+                )
+                count += 1
+                if count % 5 == 0:
+                    print(f"[MongoDB] 已同步 {count} 个文件...")
+            except Exception as e:
+                print(f"[MongoDB] 同步文件 {video_id} 失败: {e}")
+        
+        if count > 0:
+            print(f"[MongoDB] 同步完成，共上传 {count} 条新记录")
+        else:
+            print("[MongoDB] 本地与云端已同步，无需操作")
+    except Exception as e:
+        print(f"[MongoDB] 同步过程出错: {e}")
+
+# ============ HTTP 服务 ============ 
 class RequestHandler(BaseHTTPRequestHandler):
     def _send_json(self, data, status=200):
         self.send_response(status)
@@ -338,6 +429,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # 支持 Private Network Access (Chrome 的安全策略)
+        self.send_header('Access-Control-Allow-Private-Network', 'true')
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode())
     
@@ -346,35 +439,52 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        # 支持 Private Network Access (Chrome 的安全策略)
+        self.send_header('Access-Control-Allow-Private-Network', 'true')
         self.end_headers()
     
     def do_GET(self):
         if self.path == '/':
             self._send_json({
-                'service': 'YouTube 本地 Whisper 服务',
+                'service': 'YouTube 本地 Whisper 服务 (Queue Mode)',
                 'status': 'running',
-                'local_whisper': HAS_LOCAL_WHISPER
+                'queue_size': task_queue.qsize(),
+                'local_whisper': HAS_LOCAL_WHISPER,
+                'cloud_sync': HAS_MONGO
             })
         elif self.path.startswith('/status/'):
             task_id = self.path[8:]
             if task_id in tasks:
                 self._send_json(tasks[task_id])
             else:
-                self._send_json({'error': '任务不存在'}, 404)
+                # 如果任务不在内存，尝试从缓存读取
+                cached = get_cached_subtitles(task_id)
+                if cached:
+                    self._send_json({
+                        'task_id': task_id,
+                        'status': 'completed',
+                        'progress': 100,
+                        'message': '从缓存加载',
+                        'subtitles': cached.get('subtitles'),
+                        'detected_language': cached.get('language')
+                    })
+                else:
+                    self._send_json({'error': '任务不存在'}, 404)
         else:
             self._send_json({'error': 'Not Found'}, 404)
     
     def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        
+        try:
+            data = json.loads(body.decode())
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            self._send_json({'error': f'无效的 JSON: {str(e)}'}, 400)
+            return
+
+        # 1. 单个视频转录接口
         if self.path == '/transcribe':
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length)
-            
-            try:
-                data = json.loads(body.decode())
-            except:
-                self._send_json({'error': '无效的 JSON'}, 400)
-                return
-            
             video_url = data.get('video_url')
             if not video_url:
                 self._send_json({'error': '缺少 video_url'}, 400)
@@ -382,41 +492,103 @@ class RequestHandler(BaseHTTPRequestHandler):
             
             language = data.get('language')
             video_id = get_video_id(video_url)
-            task_id = f"{video_id}_{int(time.time())}"
+            # 使用简单的 task_id (video_id)，方便前端查询状态
+            # 如果想支持同视频重复任务，可以加上 timestamp
+            task_id = video_id 
             
-            update_task(task_id, 'pending', 0, '任务已创建')
+            # 如果任务已在队列或运行中，直接返回
+            if task_id in tasks and tasks[task_id]['status'] in ['pending', 'downloading', 'transcribing']:
+                 self._send_json({
+                    'task_id': task_id,
+                    'status': tasks[task_id]['status'],
+                    'message': '任务已在运行中'
+                })
+                 return
+
+            update_task(task_id, 'pending', 0, '已加入队列，等待处理...')
             
-            # 后台处理
-            thread = threading.Thread(
-                target=process_video,
-                args=(video_url, task_id, language)
-            )
-            thread.start()
+            # 加入队列
+            task_queue.put({
+                'video_url': video_url,
+                'task_id': task_id,
+                'language': language
+            })
             
             self._send_json({
                 'task_id': task_id,
                 'status': 'pending',
-                'message': '任务已提交到本地处理队列'
+                'queue_position': task_queue.qsize(),
+                'message': '任务已提交到队列'
             })
+            
+        # 2. 播放列表批量转录接口
+        elif self.path == '/transcribe_playlist':
+            playlist_url = data.get('playlist_url')
+            language = data.get('language')
+            
+            if not playlist_url:
+                self._send_json({'error': '缺少 playlist_url'}, 400)
+                return
+            
+            # 异步解析列表，避免阻塞 HTTP 响应
+            def process_playlist_background():
+                videos = fetch_playlist_videos(playlist_url)
+                added_count = 0
+                for v in videos:
+                    vid = v['id']
+                    v_url = v['url']
+                    
+                    # 检查是否已有字幕（可选：如果已有就不加队列了，节省资源）
+                    if get_cached_subtitles(vid):
+                        continue
+                        
+                    task_id = vid
+                    # 避免重复添加
+                    if task_id in tasks and tasks[task_id]['status'] in ['pending', 'downloading', 'transcribing']:
+                        continue
+                        
+                    update_task(task_id, 'pending', 0, '批量任务: 等待处理...')
+                    task_queue.put({
+                        'video_url': v_url,
+                        'task_id': task_id,
+                        'language': language
+                    })
+                    added_count += 1
+                print(f"[Playlist] 批量添加完成，新增 {added_count} 个任务")
+
+            threading.Thread(target=process_playlist_background).start()
+            
+            self._send_json({
+                'status': 'success',
+                'message': '正在后台解析列表并添加到队列，请稍候...'
+            })
+
         else:
             self._send_json({'error': 'Not Found'}, 404)
 
-# ============ 启动 ============
+# ============ 启动 ============ 
 if __name__ == '__main__':
     print("=" * 50)
-    print("YouTube 本地 Whisper 字幕服务 (Faster-Whisper)")
+    print("YouTube 本地 Whisper 字幕服务 (Queue Mode)")
     print("=" * 50)
     print(f"服务地址: http://127.0.0.1:{PORT}")
     print(f"当前模型: {MODEL_SIZE} (运行在 {DEVICE})")
+    print(f"并发 Worker 数: {MAX_CONCURRENT_TASKS}")
     
     # 初始化 MongoDB
-    init_mongo()
+    if init_mongo():
+        # 如果连接成功，启动一个后台线程进行同步，以免阻塞服务启动
+        threading.Thread(target=sync_local_cache_to_mongo, daemon=True).start()
+    
+    # 启动后台 Worker 线程
+    for i in range(MAX_CONCURRENT_TASKS):
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
     
     if not HAS_LOCAL_WHISPER:
         print("⚠ 错误: 未找到 faster-whisper 依赖!")
         print("  请先运行: pip install faster-whisper")
     print("=" * 50)
-    print("首次识别时会加载模型，请耐心等待...")
     
     server = HTTPServer(('127.0.0.1', PORT), RequestHandler)
     try:

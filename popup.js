@@ -2,13 +2,15 @@
 document.addEventListener('DOMContentLoaded', async () => {
     // DOM 元素
     const generateBtn = document.getElementById('generateBtn');
+    const batchBtn = document.getElementById('batchBtn');
     const statusIndicator = document.getElementById('statusIndicator');
     const statusText = document.getElementById('statusText');
     const progressContainer = document.getElementById('progressContainer');
     const progressFill = document.getElementById('progressFill');
     const progressText = document.getElementById('progressText');
     const subtitleControls = document.getElementById('subtitleControls');
-    const toggleSubtitleBtn = document.getElementById('toggleSubtitleBtn');
+    const subtitleToggle = document.getElementById('subtitleToggle');
+    const toggleText = document.getElementById('toggleText');
     const downloadBtn = document.getElementById('downloadBtn');
 
     const languageSelect = document.getElementById('language');
@@ -27,6 +29,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadSettings();
     await checkService();
     await checkExistingSubtitles();
+
+    // 检查是否显示批量按钮
+    const { isYouTube, playlistId } = await checkYouTubePage();
+    if (isYouTube && playlistId) {
+        batchBtn.style.display = 'flex';
+    }
+
     setupProgressListener();
 
     // 服务选择变更
@@ -68,13 +77,61 @@ document.addEventListener('DOMContentLoaded', async () => {
         await startSubtitleGeneration(tab);
     });
 
-    // 显示/隐藏字幕按钮
-    toggleSubtitleBtn.addEventListener('click', async () => {
-        subtitlesVisible = !subtitlesVisible;
-        toggleSubtitleBtn.classList.toggle('active', subtitlesVisible);
-        toggleSubtitleBtn.innerHTML = subtitlesVisible
-            ? '<span>👁️</span> 显示字幕'
-            : '<span>👁️‍🗨️</span> 隐藏字幕';
+    // 批量生成按钮
+    batchBtn.addEventListener('click', async () => {
+        const { isYouTube, tab, playlistId } = await checkYouTubePage();
+
+        if (!isYouTube || !playlistId) {
+            showError('未检测到播放列表');
+            return;
+        }
+
+        // 仅支持本地服务
+        if (whisperServiceSelect.value !== 'local') {
+            showError('批量生成功能仅支持本地 Whisper 服务');
+            return;
+        }
+
+        batchBtn.disabled = true;
+        batchBtn.querySelector('.btn-text').textContent = '提交请求中...';
+
+        try {
+            const response = await fetch('http://127.0.0.1:8765/transcribe_playlist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    playlist_url: `https://www.youtube.com/playlist?list=${playlistId}`,
+                    language: languageSelect.value
+                })
+            });
+
+            const data = await response.json();
+
+            if (data.error) {
+                showError(data.error);
+                batchBtn.disabled = false;
+                batchBtn.querySelector('.btn-text').textContent = '批量生成列表字幕';
+            } else {
+                statusText.textContent = '批量任务已后台提交！';
+                statusIndicator.className = 'status-indicator processing';
+                batchBtn.querySelector('.btn-text').textContent = '已提交后台';
+                setTimeout(() => {
+                    batchBtn.style.display = 'none'; // 提交后隐藏按钮或恢复
+                }, 2000);
+            }
+        } catch (e) {
+            showError('连接本地服务失败');
+            batchBtn.disabled = false;
+            batchBtn.querySelector('.btn-text').textContent = '批量生成列表字幕';
+        }
+    });
+
+    // 字幕开关变更
+    subtitleToggle.addEventListener('change', async () => {
+        subtitlesVisible = subtitleToggle.checked;
+        toggleText.textContent = subtitlesVisible ? '字幕已开启' : '字幕已关闭';
+
+        saveSettings();
 
         const { tab } = await checkYouTubePage();
         if (tab) {
@@ -109,11 +166,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateSubtitleStyle();
     });
 
-    // ============ 函数定义 ============
+    // ============ 函数定义 ============ 
 
     async function loadSettings() {
         const settings = await chrome.storage.local.get([
-            'language', 'whisperService', 'apiKey', 'fontSize', 'position'
+            'language', 'whisperService', 'apiKey', 'fontSize', 'position', 'subtitlesVisible'
         ]);
 
         if (settings.language) languageSelect.value = settings.language;
@@ -127,6 +184,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             fontSizeValue.textContent = settings.fontSize + 'px';
         }
         if (settings.position) positionSelect.value = settings.position;
+
+        if (settings.subtitlesVisible !== undefined) {
+            subtitlesVisible = settings.subtitlesVisible;
+            subtitleToggle.checked = subtitlesVisible;
+            toggleText.textContent = subtitlesVisible ? '字幕已开启' : '字幕已关闭';
+        }
     }
 
     async function saveSettings() {
@@ -135,26 +198,44 @@ document.addEventListener('DOMContentLoaded', async () => {
             whisperService: whisperServiceSelect.value,
             apiKey: apiKeyInput.value,
             fontSize: parseInt(fontSizeSlider.value),
-            position: positionSelect.value
+            position: positionSelect.value,
+            subtitlesVisible: subtitleToggle.checked
         });
     }
 
     async function checkService() {
         if (whisperServiceSelect.value === 'local') {
             try {
+                // 添加超时控制，3秒超时
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+
                 const response = await fetch('http://127.0.0.1:8765/', {
                     method: 'GET',
-                    mode: 'cors'
+                    mode: 'cors',
+                    signal: controller.signal
                 });
+                clearTimeout(timeoutId);
+
                 if (response.ok) {
+                    const data = await response.json();
                     statusIndicator.className = 'status-indicator';
-                    statusText.textContent = 'Whisper 服务已就绪';
+                    // 显示队列状态
+                    if (data.queue_size !== undefined && data.queue_size > 0) {
+                        statusText.textContent = `服务就绪 (队列: ${data.queue_size})`;
+                    } else {
+                        statusText.textContent = 'Whisper 服务已就绪';
+                    }
                 } else {
                     throw new Error();
                 }
             } catch (e) {
                 statusIndicator.className = 'status-indicator error';
-                statusText.textContent = 'Whisper 服务未运行';
+                if (e.name === 'AbortError') {
+                    statusText.textContent = 'Whisper 服务连接超时';
+                } else {
+                    statusText.textContent = 'Whisper 服务未运行';
+                }
             }
         }
     }
@@ -174,14 +255,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
             if (!tab.url || !tab.url.includes('youtube.com/watch')) {
-                return { isYouTube: false, tab: null, videoId: null };
+                return { isYouTube: false, tab: null, videoId: null, playlistId: null };
             }
 
             const url = new URL(tab.url);
             const videoId = url.searchParams.get('v');
-            return { isYouTube: true, tab, videoId };
+            const playlistId = url.searchParams.get('list');
+            return { isYouTube: true, tab, videoId, playlistId };
         } catch (e) {
-            return { isYouTube: false, tab: null, videoId: null };
+            return { isYouTube: false, tab: null, videoId: null, playlistId: null };
         }
     }
 
@@ -291,7 +373,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             sendMessageToContentScript(tab.id, {
                 action: 'updateStyle',
                 settings: getCurrentSettings()
-            }).catch(() => { });
+            }).catch(e => console.debug('Style update failed:', e));
         }
     }
 
@@ -316,7 +398,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusText.textContent = '字幕已就绪';
         progressContainer.style.display = 'none';
         subtitleControls.style.display = 'flex';
-        generateBtn.querySelector('.btn-text').textContent = '重新生成';
+        const btnText = generateBtn.querySelector('.btn-text');
+        if (btnText) btnText.textContent = '重新生成';
         generateBtn.disabled = false;
     }
 

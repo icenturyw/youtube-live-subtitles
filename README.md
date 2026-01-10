@@ -16,16 +16,28 @@
 
 本项目支持连接到 MongoDB 云数据库，实现字幕的跨设备共享。推荐使用 **MongoDB Atlas** 的永久免费层。
 
-1.  访问 [MongoDB Atlas 官网](https://www.mongodb.com/cloud/atlas/register) 注册并创建一个 **M0 (Free)** 共享集群。
-2.  在 **Database Access** 页面创建一个数据库用户，记下用户名和密码。
-3.  在 **Network Access** 页面，添加 `0.0.0.0/0` 允许所有 IP 连接（或仅添加您自己的 IP）。
-4.  在集群主页点击 `Connect` -> `Drivers`，选择 Python，获取以 `mongodb+srv://...` 开头的连接字符串。
-5.  将此字符串填入 `whisper-server/server.py` 的 `MONGO_URI` 变量中。
+### 配置方式
 
-```python
-# whisper-server/server.py
-MONGO_URI = "mongodb+srv://<user>:<password>@cluster.mongodb.net/..."
+**方式一：环境变量（推荐）**
+
+创建 `whisper-server/.env` 文件或设置系统环境变量：
+
+```bash
+MONGO_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/?retryWrites=true&w=majority
+MONGO_DB_NAME=youtube_subtitles
+MONGO_COLLECTION_NAME=videos
 ```
+
+**方式二：直接修改配置文件**
+
+编辑 `whisper-server/server.py` 中的配置变量。
+
+### MongoDB Atlas 设置步骤
+
+1. 访问 [MongoDB Atlas 官网](https://www.mongodb.com/cloud/atlas/register) 注册并创建一个 **M0 (Free)** 共享集群。
+2. 在 **Database Access** 页面创建一个数据库用户，记下用户名和密码。
+3. 在 **Network Access** 页面，添加 `0.0.0.0/0` 允许所有 IP 连接（或仅添加您自己的 IP）。
+4. 在集群主页点击 `Connect` -> `Drivers`，选择 Python，获取以 `mongodb+srv://...` 开头的连接字符串。
 
 如果 `MONGO_URI` 留空或连接失败，服务会自动回退到纯本地缓存模式。
 
@@ -41,7 +53,7 @@ MONGO_URI = "mongodb+srv://<user>:<password>@cluster.mongodb.net/..."
 1. 进入 `whisper-server` 文件夹。
 2. 运行 `start.bat`。它会自动创建虚拟环境并安装所需依赖（包括 `faster-whisper`, `yt-dlp`, `pymongo` 等）。
 3. 首次启动会下载指定的 Whisper 模型（默认 `large-v3`）。
-4. （可选）根据上方指引配置好 `MONGO_URI` 以开启云同步。
+4. （可选）根据上方指引配置好 MongoDB 以开启云同步。
 5. 看到 `服务地址: http://127.0.0.1:8765` 和 `[MongoDB] 连接成功` 字样说明启动成功。
 
 ### 2. 安装浏览器扩展
@@ -53,8 +65,8 @@ MONGO_URI = "mongodb+srv://<user>:<password>@cluster.mongodb.net/..."
 ## 📖 使用说明
 
 1. 打开任意 YouTube 视频页面。
-2. 点击扩展图标，确保状态显示为“就绪”。
-3. 在设置中选择识别语言（或点击“自动检测”）。
+2. 点击扩展图标，确保状态显示为"Whisper 服务已就绪"。
+3. 在设置中选择识别语言（或选择"自动检测"）。
 4. 点击 **生成字幕**。
 5. 如果云端已有缓存，将直接加载。否则，后端会开始本地识别，并实时推送进度。
 6. 完成后，字幕会自动显示在视频播放器上方，并上传至云端。
@@ -70,8 +82,28 @@ MONGO_URI = "mongodb+srv://<user>:<password>@cluster.mongodb.net/..."
 ## 📦 技术栈
 
 - **Frontend**: Manifest V3, Vanilla JS, CSS3
-- **Backend**: Python, FastAPI, Faster-Whisper, OpenCC, MongoDB (pymongo)
+- **Backend**: Python, HTTP Server, Faster-Whisper, OpenCC, MongoDB (pymongo)
 - **Tools**: yt-dlp, FFmpeg
+
+## 🔄 更新日志
+
+### v1.0.1 (2026-01-10)
+
+**安全性改进**
+- MongoDB 凭证现在支持从环境变量读取，提升安全性
+- 添加了 `.env.example` 示例配置文件
+- 更新了 `.gitignore`，排除敏感配置文件
+
+**兼容性修复**
+- 修复了 Chrome Private Network Access (PNA) 策略导致的 CORS 错误
+- 扩展现在通过 background script 代理本地服务请求
+- 添加了 `Access-Control-Allow-Private-Network` 响应头
+
+**健壮性增强**
+- 为服务检查添加了 3 秒超时，避免请求无限等待
+- 改进了错误处理和日志记录
+- 修复了可能导致 Promise 多次 resolve/reject 的竞态条件
+- 移除了未使用的浏览器扩展权限
 
 ## ⚖️ 许可证
 

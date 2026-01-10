@@ -5,6 +5,28 @@
     // ============ 配置 ============
     const WHISPER_SERVER = 'http://127.0.0.1:8765';
 
+    // ============ 代理 fetch 函数 (绕过 PNA 限制) ============
+    async function proxyFetch(url, options = {}) {
+        try {
+            const result = await chrome.runtime.sendMessage({
+                type: 'proxyFetch',
+                url: url,
+                options: {
+                    method: options.method || 'GET',
+                    headers: options.headers,
+                    body: options.body
+                }
+            });
+            if (result.error) {
+                throw new Error(result.error);
+            }
+            return result;
+        } catch (e) {
+            console.error('Proxy fetch 失败:', e);
+            throw e;
+        }
+    }
+
     // ============ 状态变量 ============
     let subtitles = [];
     let subtitleContainer = null;
@@ -21,7 +43,60 @@
     function init() {
         findVideoElement();
         setupVideoListeners();
+        // 尝试自动加载字幕
+        autoLoadSubtitles();
         console.log('YouTube 字幕生成器已加载');
+    }
+
+    async function autoLoadSubtitles() {
+        const videoId = new URLSearchParams(window.location.search).get('v');
+        if (!videoId) return;
+
+        try {
+            const keys = [`subtitles_${videoId}`, 'fontSize', 'position', 'subtitlesVisible'];
+            const data = await chrome.storage.local.get(keys);
+
+            // 更新设置
+            if (data.fontSize) settings.fontSize = data.fontSize;
+            if (data.position) settings.position = data.position;
+            if (data.subtitlesVisible !== undefined) isVisible = data.subtitlesVisible;
+
+            // 加载字幕
+            if (data[`subtitles_${videoId}`]) {
+                subtitles = data[`subtitles_${videoId}`];
+                console.log('已自动加载本地字幕:', subtitles.length, '条');
+                createSubtitleContainer();
+                onTimeUpdate();
+            } else {
+                // 尝试从本地服务器加载
+                await tryLoadFromLocalServer(videoId);
+            }
+        } catch (e) {
+            console.error('自动加载字幕失败:', e);
+        }
+    }
+
+    async function tryLoadFromLocalServer(videoId) {
+        try {
+            const result = await proxyFetch(`${WHISPER_SERVER}/status/${videoId}`);
+            if (!result.ok) return;
+
+            const data = result.data;
+            if (data.status === 'completed' && data.subtitles) {
+                console.log('从本地服务同步字幕');
+                subtitles = data.subtitles;
+
+                // 保存到浏览器缓存
+                chrome.storage.local.set({
+                    [`subtitles_${videoId}`]: subtitles
+                });
+
+                createSubtitleContainer();
+                onTimeUpdate();
+            }
+        } catch (e) {
+            // 服务可能未运行，忽略
+        }
     }
 
     function findVideoElement() {
@@ -54,7 +129,7 @@
 
     // ============ 字幕同步逻辑 ============
     function onTimeUpdate() {
-        if (!subtitles.length || !isVisible) return;
+        if (!subtitles.length || !isVisible || !videoElement) return;
 
         const currentTime = videoElement.currentTime;
         const subtitle = findSubtitleAtTime(currentTime);
@@ -184,18 +259,15 @@
     // ============ Whisper 服务交互 ============
     async function checkWhisperService() {
         try {
-            const response = await fetch(`${WHISPER_SERVER}/`, {
-                method: 'GET',
-                mode: 'cors'
-            });
-            return response.ok;
+            const result = await proxyFetch(`${WHISPER_SERVER}/`);
+            return result.ok;
         } catch (e) {
             return false;
         }
     }
 
     async function startWhisperTranscription(videoUrl, language, apiKey) {
-        const response = await fetch(`${WHISPER_SERVER}/transcribe`, {
+        const result = await proxyFetch(`${WHISPER_SERVER}/transcribe`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -207,44 +279,17 @@
             })
         });
 
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || '请求失败');
+        if (!result.ok) {
+            throw new Error(result.data?.detail || '请求失败');
         }
 
-        return await response.json();
+
+        return result.data;
     }
 
     async function pollTaskStatus(taskId) {
-        // 使用 SSE 获取实时状态
-        return new Promise((resolve, reject) => {
-            const eventSource = new EventSource(`${WHISPER_SERVER}/stream/${taskId}`);
-
-            eventSource.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-
-                    // 发送进度更新
-                    sendProgress(data.progress, data.message);
-
-                    if (data.status === 'completed') {
-                        eventSource.close();
-                        resolve(data);
-                    } else if (data.status === 'error') {
-                        eventSource.close();
-                        reject(new Error(data.message));
-                    }
-                } catch (e) {
-                    console.error('解析状态失败:', e);
-                }
-            };
-
-            eventSource.onerror = () => {
-                eventSource.close();
-                // 降级到轮询
-                fallbackPolling(taskId).then(resolve).catch(reject);
-            };
-        });
+        // 直接使用轮询方式（SSE 无法通过消息代理）
+        return await fallbackPolling(taskId);
     }
 
     async function fallbackPolling(taskId) {
@@ -254,8 +299,8 @@
             await sleep(500);
 
             try {
-                const response = await fetch(`${WHISPER_SERVER}/status/${taskId}`);
-                const data = await response.json();
+                const result = await proxyFetch(`${WHISPER_SERVER}/status/${taskId}`);
+                const data = result.data;
 
                 sendProgress(data.progress, data.message);
 
@@ -508,11 +553,19 @@
     let lastUrl = location.href;
     new MutationObserver(() => {
         if (location.href !== lastUrl) {
+            const oldId = new URLSearchParams(new URL(lastUrl).search).get('v');
+            const newId = new URLSearchParams(window.location.search).get('v');
+
             lastUrl = location.href;
-            subtitles = [];
-            removeSubtitleContainer();
-            findVideoElement();
-            setupVideoListeners();
+
+            if (oldId !== newId) {
+                console.log('检测到视频切换，重置并尝试加载字幕');
+                subtitles = [];
+                removeSubtitleContainer();
+                findVideoElement();
+                setupVideoListeners();
+                autoLoadSubtitles();
+            }
         }
     }).observe(document, { subtree: true, childList: true });
 
