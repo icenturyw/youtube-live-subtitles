@@ -19,12 +19,25 @@ try:
     import httpx
 except ImportError:
     httpx = None
+import logging
+
+# 配置日志
+LOG_FILE = Path("server.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
 
 try:
     from faster_whisper import WhisperModel
     HAS_LOCAL_WHISPER = True
 except ImportError:
     HAS_LOCAL_WHISPER = False
+    logging.warning("未检测到 faster-whisper 依赖，本地识别模式将失效。")
 
 # MongoDB Support
 try:
@@ -79,12 +92,12 @@ mongo_collection = None
 def init_mongo():
     global mongo_client, mongo_collection
     if not HAS_MONGO:
-        print("[⚠警告] 未检测到 pymongo 依赖，MongoDB 云同步功能已禁用")
-        print("      请运行: pip install pymongo dnspython")
+        logging.warning("未检测到 pymongo 依赖，MongoDB 云同步功能已禁用")
+        logging.warning("      请运行: pip install pymongo dnspython")
         return False
     
     try:
-        print(f"[MongoDB] 正在尝试连接...")
+        logging.info(f"正在尝试连接 MongoDB...")
         mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         # 简单检查连接
         mongo_client.admin.command('ping')
@@ -92,11 +105,11 @@ def init_mongo():
         mongo_collection = db[MONGO_COLLECTION_NAME]
         # 创建索引以加速查询
         mongo_collection.create_index("video_id", unique=True)
-        print(f"[MongoDB] 连接成功: ({MONGO_DB_NAME}.{MONGO_COLLECTION_NAME})")
+        logging.info(f"MongoDB 连接成功: ({MONGO_DB_NAME}.{MONGO_COLLECTION_NAME})")
         return True
     except Exception as e:
-        print(f"[MongoDB] 连接失败: {e}")
-        print(f"[MongoDB] 将仅使用本地缓存模式运行")
+        logging.error(f"MongoDB 连接失败: {e}")
+        logging.info(f"将仅使用本地缓存模式运行")
         mongo_client = None
         mongo_collection = None
         return False
@@ -119,19 +132,19 @@ def get_cached_subtitles(video_id):
             with open(cache_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"[Cache] 本地缓存读取错误: {e}")
+            logging.error(f"本地缓存读取错误: {e}")
 
     # 2. 查 MongoDB
     if mongo_collection is not None:
         try:
             doc = mongo_collection.find_one({"video_id": video_id}, {"_id": 0})
             if doc:
-                print(f"[Cache] 命中 MongoDB 云端缓存: {video_id}")
+                logging.info(f"命中 MongoDB 云端缓存: {video_id}")
                 # 顺便写回本地，下次就不用查库了
                 save_subtitles_cache(video_id, doc.get('subtitles'), doc.get('language'))
                 return doc
         except Exception as e:
-            print(f"[MongoDB] 查询错误: {e}")
+            logging.error(f"MongoDB 查询错误: {e}")
             
     return None
 
@@ -149,7 +162,7 @@ def save_subtitles_cache(video_id, subtitles, language):
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"[Cache] 本地写入失败: {e}")
+        logging.error(f"本地写入失败: {e}")
 
     # 2. 保存到 MongoDB
     if mongo_collection is not None:
@@ -159,11 +172,11 @@ def save_subtitles_cache(video_id, subtitles, language):
                 {"$set": data},
                 upsert=True
             )
-            print(f"[MongoDB] 字幕已上传/同步到云端: {video_id}")
+            logging.info(f"字幕已上传/同步到云端: {video_id}")
         except Exception as e:
-            print(f"[MongoDB] 同步到云端失败: {e}")
+            logging.error(f"同步到云端失败: {e}")
     else:
-        print(f"[信息] MongoDB 未连接，字幕仅保存至本地缓存")
+        logging.info(f"MongoDB 未连接，字幕仅保存至本地缓存")
 
 def update_task(task_id, status, progress, message, subtitles=None, language=None):
     tasks[task_id] = {
@@ -178,10 +191,13 @@ def update_task(task_id, status, progress, message, subtitles=None, language=Non
 
 def get_model():
     global whisper_model
+    if not HAS_LOCAL_WHISPER:
+        raise Exception("本地 Whisper 依赖 (faster-whisper) 未安装，请在设置中选择 Groq/OpenAI API 模式")
+        
     if whisper_model is None:
         with model_lock:
             if whisper_model is None:
-                print(f"[信息] 正在加载本地模型 ({MODEL_SIZE})... 首次运行可能需要下载")
+                logging.info(f"正在加载本地模型 ({MODEL_SIZE})... 首次运行可能需要下载")
                 whisper_model = WhisperModel(
                     MODEL_SIZE, 
                     device=DEVICE, 
@@ -189,7 +205,7 @@ def get_model():
                     cpu_threads=CPU_THREADS,
                     num_workers=NUM_WORKERS
                 )
-                print("[信息] 模型加载完成")
+                logging.info("模型加载完成")
     return whisper_model
 
 def download_audio(video_url, task_id):
@@ -246,7 +262,7 @@ def compress_audio_for_api(audio_path, task_id):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
-            print(f"[ffmpeg] 压缩失败: {result.stderr}")
+            logging.error(f"ffmpeg 压缩失败: {result.stderr}")
             return audio_path # 尝试原样上传，虽然可能会失败
             
         if os.path.getsize(compressed_path) > MAX_SIZE:
@@ -263,7 +279,7 @@ def compress_audio_for_api(audio_path, task_id):
             
         return compressed_path
     except Exception as e:
-        print(f"[Error] 压缩过程出错: {e}")
+        logging.error(f"压缩过程出错: {e}")
         return audio_path
 
 def split_text(text, max_len=25):
@@ -473,14 +489,14 @@ def process_video_task(video_url, task_id, language, api_key=None, service='loca
             os.remove(audio_path)
         
     except Exception as e:
-        print(f"[Error] 任务 {task_id} 失败: {e}")
+        logging.error(f"任务 {task_id} 失败: {e}")
         update_task(task_id, 'error', 0, str(e))
 
 def worker():
     """
     后台工作线程：不断从队列取任务执行
     """
-    print(f"[Worker] 线程启动，等待任务...")
+    logging.info("Worker 线程启动，等待任务...")
     while True:
         try:
             # 阻塞等待任务
@@ -491,14 +507,14 @@ def worker():
             api_key = task.get('api_key')
             service = task.get('service', 'local')
             
-            print(f"[Worker] 开始处理任务: {task_id} ({video_url}) [Service: {service}]")
+            logging.info(f"开始处理任务: {task_id} ({video_url}) [Service: {service}]")
             process_video_task(video_url, task_id, language, api_key, service)
             
             task_queue.task_done()
-            print(f"[Worker] 任务完成: {task_id}, 队列剩余: {task_queue.qsize()}")
+            logging.info(f"任务完成: {task_id}, 队列剩余: {task_queue.qsize()}")
             
         except Exception as e:
-            print(f"[Worker] 发生异常: {e}")
+            logging.error(f"Worker 发生异常: {e}")
 
 def fetch_playlist_videos(playlist_url):
     """
@@ -527,7 +543,7 @@ def fetch_playlist_videos(playlist_url):
                     })
         return videos
     except Exception as e:
-        print(f"[Playlist] 解析错误: {e}")
+        logging.error(f"[Playlist] 解析错误: {e}")
         return []
 
 def sync_local_cache_to_mongo():
@@ -537,7 +553,7 @@ def sync_local_cache_to_mongo():
     if mongo_collection is None:
         return
     
-    print("[MongoDB] 开始扫描本地缓存并同步到云端...")
+    logging.info("开始扫描本地缓存并同步到云端...")
     count = 0
     try:
         for file in CACHE_DIR.glob("*.json"):
@@ -557,16 +573,16 @@ def sync_local_cache_to_mongo():
                 )
                 count += 1
                 if count % 5 == 0:
-                    print(f"[MongoDB] 已同步 {count} 个文件...")
+                    logging.info(f"已同步 {count} 个文件...")
             except Exception as e:
-                print(f"[MongoDB] 同步文件 {video_id} 失败: {e}")
+                logging.error(f"同步文件 {video_id} 失败: {e}")
         
         if count > 0:
-            print(f"[MongoDB] 同步完成，共上传 {count} 条新记录")
+            logging.info(f"同步完成，共上传 {count} 条新记录")
         else:
-            print("[MongoDB] 本地与云端已同步，无需操作")
+            logging.info("本地与云端已同步，无需操作")
     except Exception as e:
-        print(f"[MongoDB] 同步过程出错: {e}")
+        logging.error(f"同步过程出错: {e}")
 
 # ============ HTTP 服务 ============ 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -704,7 +720,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         'language': language
                     })
                     added_count += 1
-                print(f"[Playlist] 批量添加完成，新增 {added_count} 个任务")
+                logging.info(f"批量添加完成，新增 {added_count} 个任务")
 
             threading.Thread(target=process_playlist_background).start()
             
@@ -718,12 +734,12 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 # ============ 启动 ============ 
 if __name__ == '__main__':
-    print("=" * 50)
-    print("YouTube 本地 Whisper 字幕服务 (Queue Mode)")
-    print("=" * 50)
-    print(f"服务地址: http://127.0.0.1:{PORT}")
-    print(f"当前模型: {MODEL_SIZE} (运行在 {DEVICE})")
-    print(f"并发 Worker 数: {MAX_CONCURRENT_TASKS}")
+    logging.info("=" * 50)
+    logging.info("YouTube 本地 Whisper 字幕服务 (Queue Mode)")
+    logging.info("=" * 50)
+    logging.info(f"服务地址: http://127.0.0.1:{PORT}")
+    logging.info(f"当前模型: {MODEL_SIZE} (运行在 {DEVICE})")
+    logging.info(f"并发 Worker 数: {MAX_CONCURRENT_TASKS}")
     
     # 初始化 MongoDB
     if init_mongo():
@@ -736,12 +752,11 @@ if __name__ == '__main__':
         t.start()
     
     if not HAS_LOCAL_WHISPER:
-        print("⚠ 错误: 未找到 faster-whisper 依赖!")
-        print("  请先运行: pip install faster-whisper")
-    print("=" * 50)
+        logging.warning("未找到 faster-whisper 依赖，只能使用 API 识别模式")
+    logging.info("=" * 50)
     
     server = HTTPServer(('127.0.0.1', PORT), RequestHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n服务已停止")
+        logging.info("服务已停止")

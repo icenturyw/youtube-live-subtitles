@@ -34,9 +34,15 @@ GROQ_API_KEY=gsk_xxxx
 OPENAI_API_KEY=sk_xxxx
 ```
 
+### 3. 静默后台模式 (推荐)
+如果您不想每次手动启动黑色的控制台窗口，可以使用以下方式：
+- **手动后台启动**：双击 `whisper-server/run_hidden.vbs`，服务将静默运行。
+- **配置开机自启**：双击 `whisper-server/setup_autostart.bat`，之后每次登录 Windows 系统服务都会自动启动。
+- **查看日志**：如果服务运行异常，请查看 `whisper-server/server.log`。
+
 ## 🛠️ 环境要求
 
-- **Python 3.10+**
+- **Python 3.10+** (建议安装时勾选 "Add Python to PATH")
 - **FFmpeg** (必备，用于音频提取和压缩)
 - **Chrome 浏览器**
 
@@ -44,8 +50,9 @@ OPENAI_API_KEY=sk_xxxx
 
 ### 1. 部署后端服务
 1. 进入 `whisper-server` 文件夹。
-2. 运行 `start.bat`。它会自动创建虚拟环境并安装所需依赖。
-3. 确保安装了 `pymongo`, `dnspython`, `httpx` 等扩展依赖。
+2. 运行 `start.bat` 完成初始化安装。
+3. 如果您只使用 Groq/OpenAI API，可以不安装大型模型依赖，此时后端内存占用极低。
+4. **强烈建议**：运行 `setup_autostart.bat` 配置开机自启，之后即可彻底忘记后端窗口。
 
 ### 2. 安装浏览器扩展
 1. 打开 Chrome `chrome://extensions/`。
