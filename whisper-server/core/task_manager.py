@@ -7,9 +7,9 @@ import httpx
 import json
 from pathlib import Path
 from datetime import datetime
-from .utils import get_video_id, split_text, compress_audio, converter, CACHE_DIR, TEMP_DIR
-from .whisper_engine import whisper_engine
-from ..db.mongodb import mongo_db
+from core.utils import get_video_id, split_text, compress_audio, converter, CACHE_DIR, TEMP_DIR
+from core.whisper_engine import whisper_engine
+from db.mongodb import mongo_db
 
 class TaskManager:
     def __init__(self):

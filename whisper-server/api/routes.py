@@ -2,8 +2,8 @@ from fastapi import APIRouter, Header, HTTPException, Depends
 from typing import Optional
 import uuid
 import os
-from ..models.models import TranscribeRequest, TaskStatus, PlaylistRequest
-from ..core.task_manager import task_manager
+from models.models import TranscribeRequest, TaskStatus, PlaylistRequest
+from core.task_manager import task_manager
 
 router = APIRouter()
 

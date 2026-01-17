@@ -2,8 +2,8 @@ import logging
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api.routes import router
-from .db.mongodb import mongo_db
+from api.routes import router
+from db.mongodb import mongo_db
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
