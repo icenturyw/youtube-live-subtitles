@@ -117,6 +117,11 @@ class TaskManager:
         else:
             subtitles, detected_lang = self._transcribe_via_api(audio_path, task_id, language, api_key, service)
 
+        # Handle Translation
+        if target_lang and subtitles:
+            self.update_task(task_id, 'transcribing', 90, f'正在翻译为 {target_lang}...')
+            subtitles = self._translate_subtitles(subtitles, target_lang, api_key, service if service != 'local' else 'groq')
+
         # Cleanup audio
         if os.path.exists(audio_path):
             os.remove(audio_path)
@@ -182,9 +187,105 @@ class TaskManager:
         return subtitles, info.language
 
     def _transcribe_via_api(self, audio_path, task_id, language, api_key, service):
-        self.update_task(task_id, 'transcribing', 50, f'正在上传至 {service}...')
-        # API logic simplified for brevity - in production would use full transcribe_via_api logic
-        # For now, placeholder or full port
-        return [], "en"
+        if not api_key:
+            raise Exception(f"未提供 {service} API Key")
+        
+        # 检查并压缩大文件
+        original_path = audio_path
+        audio_path = compress_audio(audio_path)
+        
+        self.update_task(task_id, 'transcribing', 48, f'正在向 {service.upper()} 上传并识别...')
+        
+        url = "https://api.groq.com/openai/v1/audio/transcriptions" if service == 'groq' else "https://api.openai.com/v1/audio/transcriptions"
+        model_name = "whisper-large-v3" if service == 'groq' else "whisper-1"
+        
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        try:
+            files = {"file": (Path(audio_path).name, open(audio_path, "rb"), "audio/mpeg")}
+            data = {"model": model_name, "response_format": "verbose_json"}
+            if language and language != 'auto':
+                data["language"] = language
+
+            with httpx.Client() as client:
+                response = client.post(url, headers=headers, data=data, files=files, timeout=300)
+                files["file"][1].close()
+                
+                if audio_path != original_path and os.path.exists(audio_path):
+                    os.remove(audio_path)
+                
+                if response.status_code != 200:
+                    raise Exception(f"API 错误: {response.text}")
+                
+                result = response.json()
+                raw_segments = result.get('segments', [])
+                detected_lang = result.get('language', language)
+                
+                subtitles = []
+                for seg in raw_segments:
+                    text = seg['text'].strip()
+                    if not text: continue
+                    if converter: text = converter.convert(text)
+                    
+                    if len(text) > 25:
+                        parts = split_text(text)
+                        duration = seg['end'] - seg['start']
+                        p_dur = duration / len(parts)
+                        for i, p in enumerate(parts):
+                            subtitles.append({
+                                'start': round(seg['start'] + i * p_dur, 2),
+                                'end': round(seg['start'] + (i + 1) * p_dur, 2),
+                                'text': p
+                            })
+                    else:
+                        subtitles.append({'start': round(seg['start'], 2), 'end': round(seg['end'], 2), 'text': text})
+                
+                return subtitles, detected_lang
+        except Exception as e:
+            raise Exception(f"{service.upper()} API 调用失败: {str(e)}")
+
+    def _translate_subtitles(self, subtitles, target_lang, api_key, service='groq'):
+        if not subtitles or not target_lang or not api_key:
+            return subtitles
+
+        batch_size = 30
+        translated_subtitles = []
+        url = "https://api.groq.com/openai/v1/chat/completions" if service == 'groq' else "https://api.openai.com/v1/chat/completions"
+        model_name = "llama-3.3-70b-versatile" if service == 'groq' else "gpt-4o-mini"
+        
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        lang_map = {'zh': 'Simplified Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'fr': 'French', 'de': 'German', 'es': 'Spanish', 'ru': 'Russian'}
+        target_lang_name = lang_map.get(target_lang, target_lang)
+
+        for i in range(0, len(subtitles), batch_size):
+            batch = subtitles[i : i + batch_size]
+            batch_text = "\n".join([f"[{j}] {sub['text']}" for j, sub in enumerate(batch)])
+            prompt = f"Translate the following {len(batch)} subtitle lines into {target_lang_name}. Maintain exact format: [index] translated_text\n\n{batch_text}"
+
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "system", "content": "You are a professional translator. Return ONLY the translated lines."}, {"role": "user", "content": prompt}],
+                "temperature": 0.1
+            }
+
+            try:
+                response = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+                if response.status_code == 200:
+                    result = response.json()
+                    lines = result['choices'][0]['message']['content'].strip().split('\n')
+                    temp_map = {}
+                    for line in lines:
+                        match = re.search(r'\[(\d+)\]\s*(.*)', line)
+                        if match:
+                            temp_map[int(match.group(1))] = match.group(2).strip()
+                    
+                    for j in range(len(batch)):
+                        batch[j]['translation'] = temp_map.get(j, "")
+                else:
+                    for sub in batch: sub['translation'] = ""
+            except:
+                for sub in batch: sub['translation'] = ""
+            translated_subtitles.extend(batch)
+        return translated_subtitles
 
 task_manager = TaskManager()
