@@ -37,7 +37,13 @@
     let isVisible = true;
     let settings = {
         fontSize: 24,
-        position: 'bottom'
+        position: 'bottom',
+        color: '#ffffff',
+        backgroundColor: '#000000',
+        backgroundOpacity: 0.8,
+        fontFamily: 'Arial, sans-serif',
+        strokeWidth: '2px',
+        strokeColor: '#000000'
     };
     let videoElement = null;
     let isProcessing = false;
@@ -206,6 +212,16 @@
         subtitleContainer = null;
     }
 
+    // 辅助函数：将hex颜色转换为rgb
+    function hexToRgb(hex) {
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+        } : null;
+    }
+
     function updateSubtitleStyle() {
         if (!subtitleContainer) return;
 
@@ -228,15 +244,24 @@
 
         const textElement = document.getElementById('yt-custom-subtitle-text');
         if (textElement) {
+            // 应用用户自定义样式
+            const bgRgb = hexToRgb(settings.backgroundColor);
+            const bgColor = bgRgb
+                ? `rgba(${bgRgb.r}, ${bgRgb.g}, ${bgRgb.b}, ${settings.backgroundOpacity})`
+                : `rgba(0, 0, 0, ${settings.backgroundOpacity})`;
+
             textElement.style.cssText = `
         display: inline-block;
         padding: 10px 20px;
-        background: rgba(0, 0, 0, 0.85);
-        color: white;
+        background: ${bgColor};
+        color: ${settings.color};
         font-size: ${settings.fontSize}px;
-        font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
+        font-family: ${settings.fontFamily};
         border-radius: 8px;
-        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.9);
+        text-shadow: ${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeColor},
+                     -${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeColor},
+                     ${settings.strokeWidth} -${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeColor},
+                     -${settings.strokeWidth} -${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeColor};
         line-height: 1.5;
         max-width: 100%;
         word-wrap: break-word;
@@ -534,8 +559,11 @@
                 break;
 
             case 'updateStyle':
-                settings = { ...settings, ...message.settings };
-                updateSubtitleStyle();
+                // 合并新样式设置
+                if (message.style) {
+                    settings = { ...settings, ...message.style };
+                    updateSubtitleStyle();
+                }
                 sendResponse({ success: true });
                 break;
 
