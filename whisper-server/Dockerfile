@@ -11,7 +11,7 @@ WORKDIR /app
 # Copy requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install fastapi uvicorn python-multipart python-jose[cryptography] passlib[bcrypt] httpx faster-whisper opencc-python-reimplemented pymongo python-dotenv
+RUN pip install fastapi uvicorn python-multipart python-jose[cryptography] passlib[bcrypt] httpx faster-whisper opencc-python-reimplemented pymongo python-dotenv yt-dlp
 
 # Copy application code
 COPY . .
