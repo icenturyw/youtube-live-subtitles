@@ -93,7 +93,7 @@ class TaskManager:
                 return json.load(f)
         
         col = mongo_db.get_collection()
-        if col:
+        if col is not None:
             doc = col.find_one({"video_id": video_id}, {"_id": 0})
             if doc:
                 return doc
@@ -110,7 +110,7 @@ class TaskManager:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
         col = mongo_db.get_collection()
-        if col:
+        if col is not None:
             col.update_one({"video_id": video_id}, {"$set": data}, upsert=True)
 
     def _download_audio(self, video_url, task_id):
