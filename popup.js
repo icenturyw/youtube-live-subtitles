@@ -136,7 +136,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         batchBtn.querySelector('.btn-text').textContent = '提交请求中...';
 
         try {
-            const response = await fetch('http://127.0.0.1:8765/transcribe_playlist', {
+            const serverHost = serverHostInput.value || 'http://127.0.0.1:8765';
+            const response = await fetch(`${serverHost.replace(/\/$/, '')}/transcribe_playlist`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -262,7 +263,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         showProcessing('正在上传文件...', 0);
 
         try {
-            const response = await fetch('http://127.0.0.1:8765/upload', {
+            const serverHost = serverHostInput.value || 'http://127.0.0.1:8765';
+            const response = await fetch(`${serverHost.replace(/\/$/, '')}/upload`, {
                 method: 'POST',
                 body: formData
             });

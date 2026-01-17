@@ -1,5 +1,4 @@
-// Background Service Worker - 支持代理本地服务请求
-const WHISPER_SERVER = 'http://127.0.0.1:8765';
+// Background Service Worker - 支持代理本地服务请求 (动态检测服务器地址)
 
 chrome.runtime.onInstalled.addListener(() => {
     console.log('YouTube 实时字幕扩展已安装');
@@ -41,7 +40,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // 代理 fetch 请求
 async function handleProxyFetch(message) {
     const { url, options } = message;
-    const fullUrl = url.startsWith('http') ? url : `${WHISPER_SERVER}${url}`;
+
+    // 获取存储的服务器地址
+    const settings = await chrome.storage.local.get(['serverHost']);
+    const WHISPER_SERVER = settings.serverHost || 'http://127.0.0.1:8765';
+
+    const fullUrl = url.startsWith('http') ? url : `${WHISPER_SERVER.replace(/\/$/, '')}${url.startsWith('/') ? '' : '/'}${url}`;
 
     try {
         const controller = new AbortController();

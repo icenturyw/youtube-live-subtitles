@@ -6,9 +6,20 @@
     let WHISPER_SERVER = 'http://127.0.0.1:8765';
     let SERVER_AUTH_KEY = '';
 
+    // 初始化配置
+    chrome.storage.local.get(['serverHost', 'authKey'], (result) => {
+        if (result.serverHost) WHISPER_SERVER = result.serverHost.replace(/\/$/, '');
+        if (result.authKey) SERVER_AUTH_KEY = result.authKey;
+    });
+
     // ============ 代理 fetch 函数 (绕过 PNA 限制) ============
     async function proxyFetch(url, options = {}) {
         // 自动注入鉴权 Key
+        if (url.startsWith('//') || !url.includes('://')) {
+            // 补全相对路径
+            url = `${WHISPER_SERVER}${url.startsWith('/') ? '' : '/'}${url}`;
+        }
+
         if (url.startsWith(WHISPER_SERVER)) {
             options.headers = options.headers || {};
             if (SERVER_AUTH_KEY) {
@@ -476,6 +487,7 @@
             const result = await proxyFetch(`${WHISPER_SERVER}/health`);
             return result.data && result.data.status === 'ok';
         } catch (e) {
+            console.error('健康检查失败:', e);
             return false;
         }
     }
@@ -571,18 +583,22 @@
             const service = genSettings.whisperService || 'local';
 
             if (service === 'local' || service === 'groq' || service === 'openai') {
-                // 检查本地服务
-                const isAvailable = await checkWhisperService();
-                if (!isAvailable) {
-                    throw new Error('本地 Whisper 服务未运行。请先启动 whisper-server/start.bat');
-                }
-
-                // 获取当前视频 URL
+                // 立即更新当前配置 (优先使用弹窗输入的配置，即使未点击保存)
                 if (genSettings.server_host) {
                     WHISPER_SERVER = genSettings.server_host.replace(/\/$/, '');
                 }
                 if (genSettings.auth_key) {
                     SERVER_AUTH_KEY = genSettings.auth_key;
+                }
+
+                // 检查服务器可用性
+                const isAvailable = await checkWhisperService();
+                if (!isAvailable) {
+                    const isLocal = WHISPER_SERVER.includes('127.0.0.1') || WHISPER_SERVER.includes('localhost');
+                    const errorMsg = isLocal
+                        ? '本地 Whisper 服务未运行。请先启动 whisper-server/start.bat'
+                        : `无法连接到远程服务器 (${WHISPER_SERVER})，请检查地址或鉴权 Key 是否正确。`;
+                    throw new Error(errorMsg);
                 }
 
                 const videoUrl = window.location.href;
