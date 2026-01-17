@@ -275,10 +275,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const { tab } = await checkYouTubePage();
         if (tab) {
-            sendMessageToContentScript(tab.id, {
-                action: 'toggleSubtitles',
-                visible: subtitlesVisible
-            });
+            try {
+                await chrome.tabs.sendMessage(tab.id, {
+                    action: 'toggleSubtitles',
+                    visible: subtitlesVisible
+                });
+            } catch (e) {
+                console.log('无法发送字幕切换消息:', e);
+            }
         }
     });
 
@@ -416,19 +420,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function updateSubtitleStyle() {
         const { tab } = await checkYouTubePage();
         if (tab) {
-            sendMessageToContentScript(tab.id, {
-                action: 'updateStyle',
-                style: {
-                    fontSize: fontSizeSlider.value + 'px',
-                    position: positionSelect.value,
-                    color: subtitleColor.value,
-                    backgroundColor: bgColor.value,
-                    backgroundOpacity: bgOpacity.value / 100,
-                    fontFamily: fontFamily.value,
-                    strokeWidth: strokeWidth.value + 'px',
-                    strokeColor: strokeColor.value
-                }
-            });
+            try {
+                await chrome.tabs.sendMessage(tab.id, {
+                    action: 'updateStyle',
+                    style: {
+                        fontSize: fontSizeSlider.value + 'px',
+                        position: positionSelect.value,
+                        color: subtitleColor.value,
+                        backgroundColor: bgColor.value,
+                        backgroundOpacity: bgOpacity.value / 100,
+                        fontFamily: fontFamily.value,
+                        strokeWidth: strokeWidth.value + 'px',
+                        strokeColor: strokeColor.value
+                    }
+                });
+            } catch (e) {
+                console.log('无法发送样式更新消息（可能页面未加载）:', e);
+            }
         }
     }
 
