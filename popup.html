@@ -126,6 +126,50 @@
           </select>
         </div>
 
+        <!-- 高级样式设置 -->
+        <div class="style-section">
+          <h4>🎨 高级样式</h4>
+
+          <div class="setting-item">
+            <label for="subtitleColor">字幕颜色</label>
+            <input type="color" id="subtitleColor" value="#ffffff">
+          </div>
+
+          <div class="setting-item">
+            <label for="bgColor">背景颜色</label>
+            <input type="color" id="bgColor" value="#000000">
+          </div>
+
+          <div class="setting-item">
+            <label for="bgOpacity">背景透明度</label>
+            <input type="range" id="bgOpacity" min="0" max="100" value="80">
+            <span id="bgOpacityValue">80%</span>
+          </div>
+
+          <div class="setting-item">
+            <label for="fontFamily">字体</label>
+            <select id="fontFamily">
+              <option value="Arial, sans-serif">Arial</option>
+              <option value="'Microsoft YaHei', sans-serif">微软雅黑</option>
+              <option value="'SimHei', sans-serif">黑体</option>
+              <option value="'SimSun', serif">宋体</option>
+              <option value="'KaiTi', serif">楷体</option>
+              <option value="'Courier New', monospace">Courier New</option>
+            </select>
+          </div>
+
+          <div class="setting-item">
+            <label for="strokeWidth">描边宽度</label>
+            <input type="range" id="strokeWidth" min="0" max="4" value="2" step="0.5">
+            <span id="strokeWidthValue">2px</span>
+          </div>
+
+          <div class="setting-item">
+            <label for="strokeColor">描边颜色</label>
+            <input type="color" id="strokeColor" value="#000000">
+          </div>
+        </div>
+
         <button class="save-settings-btn" id="saveSettingsBtn">
           <span>💾</span> 保存配置信息
         </button>

@@ -30,6 +30,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     const fileName = document.getElementById('fileName');
     const fileSize = document.getElementById('fileSize');
 
+    // 样式自定义元素
+    const subtitleColor = document.getElementById('subtitleColor');
+    const bgColor = document.getElementById('bgColor');
+    const bgOpacity = document.getElementById('bgOpacity');
+    const bgOpacityValue = document.getElementById('bgOpacityValue');
+    const fontFamily = document.getElementById('fontFamily');
+    const strokeWidth = document.getElementById('strokeWidth');
+    const strokeWidthValue = document.getElementById('strokeWidthValue');
+    const strokeColor = document.getElementById('strokeColor');
+
     let currentVideoId = null;
     let subtitlesVisible = true;
     let currentSubtitles = null;
@@ -290,6 +300,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateSubtitleStyle();
     });
 
+    // 样式自定义变更监听（实时预览）
+    bgOpacity.addEventListener('input', () => {
+        bgOpacityValue.textContent = bgOpacity.value + '%';
+        updateSubtitleStyle();
+    });
+
+    strokeWidth.addEventListener('input', () => {
+        strokeWidthValue.textContent = strokeWidth.value + 'px';
+        updateSubtitleStyle();
+    });
+
+    subtitleColor.addEventListener('input', () => updateSubtitleStyle());
+    bgColor.addEventListener('input', () => updateSubtitleStyle());
+    fontFamily.addEventListener('change', () => updateSubtitleStyle());
+    strokeColor.addEventListener('input', () => updateSubtitleStyle());
+
+
     positionSelect.addEventListener('change', () => {
         updateSubtitleStyle();
     });
@@ -318,7 +345,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function loadSettings() {
         const settings = await chrome.storage.local.get([
-            'language', 'whisperService', 'apiKey', 'fontSize', 'position', 'subtitlesVisible'
+            'language', 'whisperService', 'apiKey', 'fontSize', 'position', 'subtitlesVisible',
+            'subtitleColor', 'bgColor', 'bgOpacity', 'fontFamily', 'strokeWidth', 'strokeColor'
         ]);
 
         if (settings.language) languageSelect.value = settings.language;
@@ -343,6 +371,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (settings.position) positionSelect.value = settings.position;
 
+        // 加载样式设置
+        if (settings.subtitleColor) subtitleColor.value = settings.subtitleColor;
+        if (settings.bgColor) bgColor.value = settings.bgColor;
+        if (settings.bgOpacity) {
+            bgOpacity.value = settings.bgOpacity;
+            bgOpacityValue.textContent = settings.bgOpacity + '%';
+        }
+        if (settings.fontFamily) fontFamily.value = settings.fontFamily;
+        if (settings.strokeWidth) {
+            strokeWidth.value = settings.strokeWidth;
+            strokeWidthValue.textContent = settings.strokeWidth + 'px';
+        }
+        if (settings.strokeColor) strokeColor.value = settings.strokeColor;
+
         if (settings.subtitlesVisible !== undefined) {
             subtitlesVisible = settings.subtitlesVisible;
             subtitleToggle.checked = subtitlesVisible;
@@ -357,8 +399,34 @@ document.addEventListener('DOMContentLoaded', async () => {
             apiKey: apiKeyInput.value,
             fontSize: parseInt(fontSizeSlider.value),
             position: positionSelect.value,
-            subtitlesVisible: subtitleToggle.checked
+            subtitlesVisible: subtitleToggle.checked,
+            // 样式设置
+            subtitleColor: subtitleColor.value,
+            bgColor: bgColor.value,
+            bgOpacity: parseInt(bgOpacity.value),
+            fontFamily: fontFamily.value,
+            strokeWidth: parseFloat(strokeWidth.value),
+            strokeColor: strokeColor.value
         });
+    }
+
+    async function updateSubtitleStyle() {
+        const { tab } = await checkYouTubePage();
+        if (tab) {
+            sendMessageToContentScript(tab.id, {
+                action: 'updateStyle',
+                style: {
+                    fontSize: fontSizeSlider.value + 'px',
+                    position: positionSelect.value,
+                    color: subtitleColor.value,
+                    backgroundColor: bgColor.value,
+                    backgroundOpacity: bgOpacity.value / 100,
+                    fontFamily: fontFamily.value,
+                    strokeWidth: strokeWidth.value + 'px',
+                    strokeColor: strokeColor.value
+                }
+            });
+        }
     }
 
     async function checkService() {
