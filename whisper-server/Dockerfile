@@ -25,4 +25,5 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8765
 
+# Use the module path for uvicorn
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8765"]
