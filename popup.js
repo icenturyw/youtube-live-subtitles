@@ -422,16 +422,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (tab) {
             sendMessageToContentScript(tab.id, {
                 action: 'updateStyle',
-                style: {
-                    fontSize: fontSizeSlider.value + 'px',
-                    position: positionSelect.value,
-                    color: subtitleColor.value,
-                    backgroundColor: bgColor.value,
-                    backgroundOpacity: bgOpacity.value / 100,
-                    fontFamily: fontFamily.value,
-                    strokeWidth: strokeWidth.value + 'px',
-                    strokeColor: strokeColor.value
-                }
+                style: getCurrentSettings()
             }).catch(e => console.log('无法发送样式更新消息:', e));
         }
     }
@@ -500,6 +491,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    function getCurrentSettings() {
+        return {
+            fontSize: fontSizeSlider.value + 'px',
+            position: positionSelect.value,
+            color: subtitleColor.value,
+            backgroundColor: bgColor.value,
+            backgroundOpacity: bgOpacity.value / 100,
+            fontFamily: fontFamily.value,
+            strokeWidth: strokeWidth.value + 'px',
+            strokeColor: strokeColor.value
+        };
+    }
+
     async function checkExistingSubtitles() {
         const { videoId } = await checkYouTubePage();
         if (!videoId) return;
@@ -535,7 +539,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 settings: {
                     language: languageSelect.value,
                     whisperService: whisperServiceSelect.value,
-                    api_key: apiKeyInput.value
+                    api_key: apiKeyInput.value,
+                    ...getCurrentSettings()
                 }
             });
 
