@@ -329,6 +329,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         await saveSettings();
 
+        // 立即应用样式更新到当前字幕
+        await updateSubtitleStyle();
+
         setTimeout(() => {
             saveSettingsBtn.classList.add('saved');
             saveSettingsBtn.innerHTML = '<span>✅</span> 配置已保存';
