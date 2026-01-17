@@ -22,6 +22,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const fontSizeSlider = document.getElementById('fontSize');
     const fontSizeValue = document.getElementById('fontSizeValue');
     const positionSelect = document.getElementById('position');
+    const serverHostInput = document.getElementById('serverHost');
+    const authKeyInput = document.getElementById('authKey');
 
     // 拖拽区域元素
     const dropZone = document.getElementById('dropZone');
@@ -79,7 +81,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (service === 'local') {
+            serverHostSetting.style.display = 'block';
+            authKeySetting.style.display = 'block';
             await checkService();
+        } else {
+            // 浏览器识别不需要服务器地址
+            serverHostSetting.style.display = service === 'browser' ? 'none' : 'block';
+            authKeySetting.style.display = service === 'browser' ? 'none' : 'block';
         }
     });
 
@@ -354,7 +362,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const settings = await chrome.storage.local.get([
             'language', 'whisperService', 'apiKey', 'fontSize', 'position', 'subtitlesVisible',
             'subtitleColor', 'bgColor', 'bgOpacity', 'fontFamily', 'strokeWidth', 'strokeColor',
-            'translateBilingual', 'targetLanguage'
+            'translateBilingual', 'targetLanguage', 'serverHost', 'authKey'
         ]);
 
         if (settings.language) languageSelect.value = settings.language;
@@ -400,6 +408,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             subtitleToggle.checked = subtitlesVisible;
             toggleText.textContent = subtitlesVisible ? '字幕已开启' : '字幕已关闭';
         }
+
+        if (settings.serverHost) serverHostInput.value = settings.serverHost;
+        if (settings.authKey) authKeyInput.value = settings.authKey;
     }
 
     async function saveSettings() {
@@ -417,7 +428,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             strokeWidth: parseFloat(strokeWidth.value),
             strokeColor: strokeColor.value,
             translateBilingual: translateBilingual.checked,
-            targetLanguage: targetLanguage.value
+            targetLanguage: targetLanguage.value,
+            serverHost: serverHostInput.value,
+            authKey: authKeyInput.value
         });
     }
 
@@ -449,9 +462,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 3000);
-                const response = await fetch('http://127.0.0.1:8765/', {
+                const host = serverHostInput.value || 'http://127.0.0.1:8765';
+                const response = await fetch(host + '/health', {
                     method: 'GET',
                     mode: 'cors',
+                    headers: {
+                        'X-API-Key': authKeyInput.value || ''
+                    },
                     signal: controller.signal
                 });
                 clearTimeout(timeoutId);
@@ -531,6 +548,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     language: languageSelect.value,
                     whisperService: whisperServiceSelect.value,
                     api_key: apiKeyInput.value,
+                    auth_key: authKeyInput.value,
+                    server_host: serverHostInput.value,
                     target_lang: translateBilingual.checked ? targetLanguage.value : null,
                     ...getCurrentSettings()
                 }

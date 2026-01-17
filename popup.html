@@ -100,11 +100,22 @@
         <div class="setting-item">
           <label for="whisperService">识别服务</label>
           <select id="whisperService">
-            <option value="local">本地 Whisper (推荐)</option>
+            <option value="local">本地 / 远程 VPS (Faster-Whisper)</option>
             <option value="groq">Groq API (极速)</option>
             <option value="openai">OpenAI Whisper API</option>
             <option value="browser">浏览器内置 (需播放)</option>
           </select>
+        </div>
+
+        <div class="setting-item" id="serverHostSetting">
+          <label for="serverHost">服务器地址</label>
+          <input type="text" id="serverHost" placeholder="http://127.0.0.1:8765" value="http://127.0.0.1:8765">
+          <p class="setting-hint" style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;">本地使用默认值，VPS则填入服务器 IP</p>
+        </div>
+
+        <div class="setting-item" id="authKeySetting">
+          <label for="authKey">服务器鉴权 Key (X-API-Key)</label>
+          <input type="password" id="authKey" placeholder="VPS 部署时必填">
         </div>
 
         <div class="setting-item api-key-setting" id="apiKeySetting" style="display: none;">

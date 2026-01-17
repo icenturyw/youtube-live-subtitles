@@ -3,10 +3,18 @@
     'use strict';
 
     // ============ 配置 ============
-    const WHISPER_SERVER = 'http://127.0.0.1:8765';
+    let WHISPER_SERVER = 'http://127.0.0.1:8765';
+    let SERVER_AUTH_KEY = '';
 
     // ============ 代理 fetch 函数 (绕过 PNA 限制) ============
     async function proxyFetch(url, options = {}) {
+        // 自动注入鉴权 Key
+        if (url.startsWith(WHISPER_SERVER)) {
+            options.headers = options.headers || {};
+            if (SERVER_AUTH_KEY) {
+                options.headers['X-API-Key'] = SERVER_AUTH_KEY;
+            }
+        }
         try {
             const result = await chrome.runtime.sendMessage({
                 type: 'proxyFetch',
@@ -465,8 +473,8 @@
     // ============ Whisper 服务交互 ============
     async function checkWhisperService() {
         try {
-            const result = await proxyFetch(`${WHISPER_SERVER}/`);
-            return result.ok;
+            const result = await proxyFetch(`${WHISPER_SERVER}/health`);
+            return result.data && result.data.status === 'ok';
         } catch (e) {
             return false;
         }
@@ -480,10 +488,10 @@
             },
             body: JSON.stringify({
                 video_url: videoUrl,
-                language: language === 'auto' ? null : language,
+                language: language === 'auto' ? 'auto' : language,
                 api_key: apiKey,
                 service: service || 'local',
-                target_lang: arguments[4] // 接收 targetLang 参数
+                target_lang: targetLang
             })
         });
 
@@ -506,7 +514,7 @@
             await sleep(500);
 
             try {
-                const result = await proxyFetch(`${WHISPER_SERVER}/status/${taskId}`);
+                const result = await proxyFetch(`${WHISPER_SERVER}/task/${taskId}`);
                 const data = result.data;
 
                 sendProgress(data.progress, data.message);
@@ -570,6 +578,13 @@
                 }
 
                 // 获取当前视频 URL
+                if (genSettings.server_host) {
+                    WHISPER_SERVER = genSettings.server_host.replace(/\/$/, '');
+                }
+                if (genSettings.auth_key) {
+                    SERVER_AUTH_KEY = genSettings.auth_key;
+                }
+
                 const videoUrl = window.location.href;
 
                 sendProgress(5, '正在连接 Whisper 服务...');
