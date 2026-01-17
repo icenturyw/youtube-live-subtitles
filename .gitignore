@@ -12,7 +12,6 @@ env/
 whisper-server/venv/
 whisper-server/cache/
 whisper-server/temp/
-whisper-server/models/
 *.mp3
 *.m4a
 *.webm
