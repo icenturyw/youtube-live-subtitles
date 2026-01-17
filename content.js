@@ -63,12 +63,24 @@
         if (!videoId) return;
 
         try {
-            const keys = [`subtitles_${videoId}`, 'fontSize', 'position', 'subtitlesVisible'];
+            const styleKeys = [
+                'fontSize', 'position', 'subtitlesVisible',
+                'subtitleColor', 'bgColor', 'bgOpacity',
+                'fontFamily', 'strokeWidth', 'strokeColor'
+            ];
+            const keys = [`subtitles_${videoId}`, ...styleKeys];
             const data = await chrome.storage.local.get(keys);
 
             // 更新设置
             if (data.fontSize) settings.fontSize = data.fontSize;
             if (data.position) settings.position = data.position;
+            if (data.subtitleColor) settings.color = data.subtitleColor;
+            if (data.bgColor) settings.backgroundColor = data.bgColor;
+            if (data.bgOpacity !== undefined) settings.backgroundOpacity = data.bgOpacity / 100;
+            if (data.fontFamily) settings.fontFamily = data.fontFamily;
+            if (data.strokeWidth) settings.strokeWidth = data.strokeWidth;
+            if (data.strokeColor) settings.strokeColor = data.strokeColor;
+
             if (data.subtitlesVisible !== undefined) isVisible = data.subtitlesVisible;
 
             // 加载字幕
@@ -244,24 +256,29 @@
 
         const textElement = document.getElementById('yt-custom-subtitle-text');
         if (textElement) {
-            // 应用用户自定义样式
+            // 参数解析，确保单位正确
+            const fSize = String(settings.fontSize).endsWith('px') ? settings.fontSize : settings.fontSize + 'px';
+            const sWidth = String(settings.strokeWidth).endsWith('px') ? settings.strokeWidth : settings.strokeWidth + 'px';
+
+            // 背景色处理
             const bgRgb = hexToRgb(settings.backgroundColor);
+            const opacity = settings.backgroundOpacity !== undefined ? settings.backgroundOpacity : 0.8;
             const bgColor = bgRgb
-                ? `rgba(${bgRgb.r}, ${bgRgb.g}, ${bgRgb.b}, ${settings.backgroundOpacity})`
-                : `rgba(0, 0, 0, ${settings.backgroundOpacity})`;
+                ? `rgba(${bgRgb.r}, ${bgRgb.g}, ${bgRgb.b}, ${opacity})`
+                : `rgba(0, 0, 0, ${opacity})`;
 
             textElement.style.cssText = `
         display: inline-block;
         padding: 10px 20px;
         background: ${bgColor};
         color: ${settings.color};
-        font-size: ${settings.fontSize}px;
+        font-size: ${fSize};
         font-family: ${settings.fontFamily};
         border-radius: 8px;
-        text-shadow: ${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeColor},
-                     -${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeColor},
-                     ${settings.strokeWidth} -${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeColor},
-                     -${settings.strokeWidth} -${settings.strokeWidth} ${settings.strokeWidth} ${settings.strokeColor};
+        text-shadow: ${sWidth} ${sWidth} ${sWidth} ${settings.strokeColor},
+                     -${sWidth} ${sWidth} ${sWidth} ${settings.strokeColor},
+                     ${sWidth} -${sWidth} ${sWidth} ${settings.strokeColor},
+                     -${sWidth} -${sWidth} ${sWidth} ${settings.strokeColor};
         line-height: 1.5;
         max-width: 100%;
         word-wrap: break-word;
