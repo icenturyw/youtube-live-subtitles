@@ -12,6 +12,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const subtitleToggle = document.getElementById('subtitleToggle');
     const toggleText = document.getElementById('toggleText');
     const downloadBtn = document.getElementById('downloadBtn');
+    const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+    const progressPercentage = document.getElementById('progressPercentage');
 
     const languageSelect = document.getElementById('language');
     const whisperServiceSelect = document.getElementById('whisperService');
@@ -41,9 +43,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 服务选择变更
     whisperServiceSelect.addEventListener('change', async () => {
         const service = whisperServiceSelect.value;
-        // 只有 OpenAI 服务需要 API Key，本地模式现在是纯本地运行了
-        apiKeySetting.style.display = (service === 'openai') ? 'block' : 'none';
-        saveSettings();
+        // OpenAI 和 Groq 服务需要 API Key
+        const needsApiKey = (service === 'openai' || service === 'groq');
+        apiKeySetting.style.display = needsApiKey ? 'block' : 'none';
+
+        const apiKeyLabel = document.getElementById('apiKeyLabel');
+        if (service === 'groq') {
+            apiKeyLabel.textContent = 'Groq API Key';
+            apiKeyInput.placeholder = 'gsk_...';
+        } else if (service === 'openai') {
+            apiKeyLabel.textContent = 'OpenAI API Key';
+            apiKeyInput.placeholder = 'sk_...';
+        }
 
         if (service === 'local') {
             await checkService();
@@ -154,16 +165,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     // 设置变更监听
-    languageSelect.addEventListener('change', saveSettings);
-    apiKeyInput.addEventListener('change', saveSettings);
+    // 字体大小变动只更新样式，不自动保存
     fontSizeSlider.addEventListener('input', () => {
         fontSizeValue.textContent = fontSizeSlider.value + 'px';
-        saveSettings();
         updateSubtitleStyle();
     });
+
     positionSelect.addEventListener('change', () => {
-        saveSettings();
         updateSubtitleStyle();
+    });
+
+    // 保存按钮点击事件
+    saveSettingsBtn.addEventListener('click', async () => {
+        saveSettingsBtn.disabled = true;
+        const originalText = saveSettingsBtn.innerHTML;
+        saveSettingsBtn.innerHTML = '<span>⏳</span> 正在保存...';
+
+        await saveSettings();
+
+        setTimeout(() => {
+            saveSettingsBtn.classList.add('saved');
+            saveSettingsBtn.innerHTML = '<span>✅</span> 配置已保存';
+
+            setTimeout(() => {
+                saveSettingsBtn.classList.remove('saved');
+                saveSettingsBtn.innerHTML = originalText;
+                saveSettingsBtn.disabled = false;
+            }, 2000);
+        }, 500);
     });
 
     // ============ 函数定义 ============ 
@@ -176,7 +205,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (settings.language) languageSelect.value = settings.language;
         if (settings.whisperService) {
             whisperServiceSelect.value = settings.whisperService;
-            apiKeySetting.style.display = (settings.whisperService === 'openai') ? 'block' : 'none';
+            const needsApiKey = (settings.whisperService === 'openai' || settings.whisperService === 'groq');
+            apiKeySetting.style.display = needsApiKey ? 'block' : 'none';
+
+            const apiKeyLabel = document.getElementById('apiKeyLabel');
+            if (settings.whisperService === 'groq') {
+                apiKeyLabel.textContent = 'Groq API Key';
+                apiKeyInput.placeholder = 'gsk_...';
+            } else if (settings.whisperService === 'openai') {
+                apiKeyLabel.textContent = 'OpenAI API Key';
+                apiKeyInput.placeholder = 'sk_...';
+            }
         }
         if (settings.apiKey) apiKeyInput.value = settings.apiKey;
         if (settings.fontSize) {
@@ -383,12 +422,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusText.textContent = text;
         progressContainer.style.display = 'block';
         progressFill.style.width = '0%';
+        if (progressPercentage) progressPercentage.textContent = '0%';
         progressText.textContent = text;
         subtitleControls.style.display = 'none';
     }
 
     function updateProgress(percent, text) {
         progressFill.style.width = percent + '%';
+        if (progressPercentage) progressPercentage.textContent = Math.round(percent) + '%';
         progressText.textContent = text;
         statusText.textContent = text;
     }

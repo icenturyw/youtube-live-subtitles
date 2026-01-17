@@ -15,6 +15,10 @@ import time
 import queue
 from pathlib import Path
 from datetime import datetime
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 try:
     from faster_whisper import WhisperModel
@@ -39,10 +43,10 @@ except ImportError:
 
 # ============ 配置 ============
 PORT = 8765
-MODEL_SIZE = "large-v3"  # 可选: tiny, base, small, medium, large-v3
-DEVICE = "cuda"       # 如果有 NVIDIA 显卡并安装了 CUDA，可改为 "cuda"
-COMPUTE_TYPE = "float16" # cpu 推荐 int8, gpu 推荐 float16
-CPU_THREADS = 0      # 线程数，0 为自动。如果 CPU 使用率低，可以尝试设为 4, 8 或 16
+MODEL_SIZE = "tiny"  # 可选: tiny, base, small, medium, large-v3
+DEVICE = "cpu"       # 如果有 NVIDIA 显卡并安装了 CUDA，可改为 "cuda"
+COMPUTE_TYPE = "int8" # cpu 推荐 int8, gpu 推荐 float16
+CPU_THREADS = 8      # 线程数，0 为自动。如果 CPU 使用率低，可以尝试设为 4, 8 或 16
 NUM_WORKERS = 4      # 模型内部工作进程数
 
 # 任务队列配置
@@ -53,6 +57,10 @@ task_queue = queue.Queue()
 MONGO_URI = os.environ.get('MONGO_URI', 'mongodb+srv://youtube_live:MZJwO7LcdUd4x64a@cluster0.v91xaip.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
 MONGO_DB_NAME = os.environ.get('MONGO_DB_NAME', 'youtube_subtitles')
 MONGO_COLLECTION_NAME = os.environ.get('MONGO_COLLECTION_NAME', 'videos')
+
+# API Keys (可选，支持 Groq 和 OpenAI)
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 
 CACHE_DIR = Path("./cache")
 CACHE_DIR.mkdir(exist_ok=True)
@@ -71,17 +79,20 @@ mongo_collection = None
 def init_mongo():
     global mongo_client, mongo_collection
     if not HAS_MONGO:
+        print("[⚠警告] 未检测到 pymongo 依赖，MongoDB 云同步功能已禁用")
+        print("      请运行: pip install pymongo dnspython")
         return False
     
     try:
-        mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=2000)
+        print(f"[MongoDB] 正在尝试连接...")
+        mongo_client = pymongo.MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         # 简单检查连接
         mongo_client.admin.command('ping')
         db = mongo_client[MONGO_DB_NAME]
         mongo_collection = db[MONGO_COLLECTION_NAME]
         # 创建索引以加速查询
         mongo_collection.create_index("video_id", unique=True)
-        print(f"[MongoDB] 连接成功: {MONGO_URI} ({MONGO_DB_NAME}.{MONGO_COLLECTION_NAME})")
+        print(f"[MongoDB] 连接成功: ({MONGO_DB_NAME}.{MONGO_COLLECTION_NAME})")
         return True
     except Exception as e:
         print(f"[MongoDB] 连接失败: {e}")
@@ -148,9 +159,11 @@ def save_subtitles_cache(video_id, subtitles, language):
                 {"$set": data},
                 upsert=True
             )
-            print(f"[MongoDB] 字幕已上传/更新: {video_id}")
+            print(f"[MongoDB] 字幕已上传/同步到云端: {video_id}")
         except Exception as e:
-            print(f"[MongoDB] 写入失败: {e}")
+            print(f"[MongoDB] 同步到云端失败: {e}")
+    else:
+        print(f"[信息] MongoDB 未连接，字幕仅保存至本地缓存")
 
 def update_task(task_id, status, progress, message, subtitles=None, language=None):
     tasks[task_id] = {
@@ -211,6 +224,79 @@ def download_audio(video_url, task_id):
     except Exception as e:
         raise Exception(f"下载错误: {str(e)}")
 
+def compress_audio_for_api(audio_path, task_id):
+    """
+    如果音频超过 25MB，压缩它以便 API 接受
+    """
+    MAX_SIZE = 24 * 1024 * 1024  # 稍微留一点余量
+    if os.path.getsize(audio_path) <= MAX_SIZE:
+        return audio_path
+    
+    update_task(task_id, 'transcribing', 46, '音频文件过大，正在进行识别优化压缩...')
+    
+    compressed_path = str(Path(audio_path).parent / f"compressed_{Path(audio_path).name}")
+    
+    # 压缩参数：16kHz, 单声道, 32k 比特率 (足够 Whisper 识别)
+    cmd = [
+        'ffmpeg', '-y', '-i', audio_path,
+        '-ar', '16000', '-ac', '1', '-b:a', '32k',
+        compressed_path
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"[ffmpeg] 压缩失败: {result.stderr}")
+            return audio_path # 尝试原样上传，虽然可能会失败
+            
+        if os.path.getsize(compressed_path) > MAX_SIZE:
+            # 如果还是太大，进一步降低比特率
+            update_task(task_id, 'transcribing', 47, '正在极度压缩超长视频音频...')
+            final_path = str(Path(audio_path).parent / f"final_{Path(audio_path).name}")
+            cmd = [
+                'ffmpeg', '-y', '-i', compressed_path,
+                '-ar', '8000', '-ac', '1', '-b:a', '16k',
+                final_path
+            ]
+            subprocess.run(cmd, capture_output=True)
+            return final_path
+            
+        return compressed_path
+    except Exception as e:
+        print(f"[Error] 压缩过程出错: {e}")
+        return audio_path
+
+def split_text(text, max_len=25):
+    if converter:
+        text = converter.convert(text)
+    
+    if len(text) <= max_len:
+        return [text]
+    
+    parts = re.split(r'([，。！？, \.! \?])', text)
+    result = []
+    current = ""
+    
+    if len(parts) == 1:
+        current = parts[0]
+    else:
+        for i in range(0, len(parts)-1, 2):
+            p = parts[i] + parts[i+1]
+            if len(current) + len(p) > max_len and current:
+                result.append(current.strip())
+                current = p
+            else:
+                current += p
+    
+    if current:
+        while len(current) > max_len:
+            result.append(current[:max_len].strip())
+            current = current[max_len:]
+        if current.strip():
+            result.append(current.strip())
+    
+    return [r for r in result if r] or [text]
+
 def transcribe_locally(audio_path, task_id, language):
     update_task(task_id, 'transcribing', 50, '正在本地识别音频 (请稍候)...')
     
@@ -229,37 +315,6 @@ def transcribe_locally(audio_path, task_id, language):
     update_task(task_id, 'transcribing', 60, f'检测到语言: {detected_lang}, 正在生成字幕...')
     
     subtitles = []
-    
-    def split_text(text, max_len=25):
-        if converter:
-            text = converter.convert(text)
-        
-        if len(text) <= max_len:
-            return [text]
-        
-        parts = re.split(r'([，。！？, \.! \?])', text)
-        result = []
-        current = ""
-        
-        if len(parts) == 1:
-            current = parts[0]
-        else:
-            for i in range(0, len(parts)-1, 2):
-                p = parts[i] + parts[i+1]
-                if len(current) + len(p) > max_len and current:
-                    result.append(current.strip())
-                    current = p
-                else:
-                    current += p
-        
-        if current:
-            while len(current) > max_len:
-                result.append(current[:max_len].strip())
-                current = current[max_len:]
-            if current.strip():
-                result.append(current.strip())
-        
-        return [r for r in result if r] or [text]
 
     for segment in segments:
         text = segment.text.strip()
@@ -293,14 +348,95 @@ def transcribe_locally(audio_path, task_id, language):
 
     return subtitles, detected_lang
 
-def process_video_task(video_url, task_id, language):
+def transcribe_via_api(audio_path, task_id, language, api_key, service='groq'):
+    if not httpx:
+        raise Exception("未安装 httpx 依赖，无法使用 API 识别")
+    
+    # 检查并压缩大文件
+    original_path = audio_path
+    audio_path = compress_audio_for_api(audio_path, task_id)
+    
+    update_task(task_id, 'transcribing', 48, f'正在读取音频文件...')
+    
+    url = "https://api.groq.com/openai/v1/audio/transcriptions" if service == 'groq' else "https://api.openai.com/v1/audio/transcriptions"
+    model_name = "whisper-large-v3" if service == 'groq' else "whisper-1"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    try:
+        update_task(task_id, 'transcribing', 50, f'正在向 {service.upper()} 上传音频并识别 (请稍候)...')
+        
+        files = {
+            "file": (Path(audio_path).name, open(audio_path, "rb"), "audio/mpeg")
+        }
+        
+        data = {
+            "model": model_name,
+            "response_format": "verbose_json"
+        }
+        
+        if language and language != 'auto':
+            data["language"] = language
+
+        with httpx.Client() as client:
+            response = client.post(url, headers=headers, data=data, files=files, timeout=300)
+            
+            # 关闭文件句柄以允许删除压缩文件
+            files["file"][1].close()
+            if audio_path != original_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+            
+            if response.status_code != 200:
+                try:
+                    err_msg = response.json().get('error', {}).get('message', response.text)
+                except:
+                    err_msg = response.text
+                raise Exception(f"API 错误 ({response.status_code}): {err_msg}")
+            
+            result = response.json()
+            raw_segments = result.get('segments', [])
+            detected_lang = result.get('language', language)
+            
+            update_task(task_id, 'transcribing', 80, f'API 识别完成，正在处理字幕...')
+            
+            subtitles = []
+            for seg in raw_segments:
+                text = seg['text'].strip()
+                if not text:
+                    continue
+                
+                if converter:
+                    text = converter.convert(text)
+                
+                if len(text) > 25:
+                    split_parts = split_text(text)
+                    duration = seg['end'] - seg['start']
+                    part_duration = duration / len(split_parts)
+                    
+                    for i, part in enumerate(split_parts):
+                        subtitles.append({
+                            'start': round(seg['start'] + i * part_duration, 2),
+                            'end': round(seg['start'] + (i + 1) * part_duration, 2),
+                            'text': part
+                        })
+                else:
+                    subtitles.append({
+                        'start': round(seg['start'], 2),
+                        'end': round(seg['end'], 2),
+                        'text': text
+                    })
+            
+            return subtitles, detected_lang
+    except Exception as e:
+        raise Exception(f"{service.upper()} API 调用失败: {str(e)}")
+
+def process_video_task(video_url, task_id, language, api_key=None, service='local'):
     """
     单个视频处理逻辑，由 Worker 调用
     """
     try:
-        if not HAS_LOCAL_WHISPER:
-            raise Exception("本地 Whisper 依赖未安装")
-            
         video_id = get_video_id(video_url)
         
         # 再次检查缓存 (防止排队期间其他任务已生成)
@@ -313,8 +449,17 @@ def process_video_task(video_url, task_id, language):
         # 下载
         audio_path = download_audio(video_url, task_id)
         
-        # 本地转录
-        subtitles, lang = transcribe_locally(audio_path, task_id, language)
+        # 转录
+        if service in ['groq', 'openai']:
+            effective_key = api_key or (GROQ_API_KEY if service == 'groq' else OPENAI_API_KEY)
+            if effective_key:
+                subtitles, lang = transcribe_via_api(audio_path, task_id, language, effective_key, service)
+            else:
+                raise Exception(f"未提供 {service.upper()} API Key，请在设置中输入或配置环境变量")
+        else:
+            if not HAS_LOCAL_WHISPER:
+                raise Exception("本地 Whisper 依赖未安装，且未提供有效的 API Key")
+            subtitles, lang = transcribe_locally(audio_path, task_id, language)
         
         # 缓存
         save_subtitles_cache(video_id, subtitles, lang)
@@ -343,9 +488,11 @@ def worker():
             video_url = task['video_url']
             task_id = task['task_id']
             language = task.get('language')
+            api_key = task.get('api_key')
+            service = task.get('service', 'local')
             
-            print(f"[Worker] 开始处理任务: {task_id} ({video_url})")
-            process_video_task(video_url, task_id, language)
+            print(f"[Worker] 开始处理任务: {task_id} ({video_url}) [Service: {service}]")
+            process_video_task(video_url, task_id, language, api_key, service)
             
             task_queue.task_done()
             print(f"[Worker] 任务完成: {task_id}, 队列剩余: {task_queue.qsize()}")
@@ -491,9 +638,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             
             language = data.get('language')
+            api_key = data.get('api_key')
+            service = data.get('service', 'local')
             video_id = get_video_id(video_url)
             # 使用简单的 task_id (video_id)，方便前端查询状态
-            # 如果想支持同视频重复任务，可以加上 timestamp
             task_id = video_id 
             
             # 如果任务已在队列或运行中，直接返回
@@ -511,7 +659,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             task_queue.put({
                 'video_url': video_url,
                 'task_id': task_id,
-                'language': language
+                'language': language,
+                'api_key': api_key,
+                'service': service
             })
             
             self._send_json({

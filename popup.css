@@ -180,6 +180,19 @@ header h1 {
   transform: translateY(0);
 }
 
+.main-btn.secondary-btn {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--accent);
+  color: var(--accent-light);
+  box-shadow: none;
+  margin-top: -8px;
+}
+
+.main-btn.secondary-btn:hover:not(:disabled) {
+  background: var(--bg-secondary);
+  border-color: var(--accent-light);
+}
+
 .main-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -221,6 +234,28 @@ header h1 {
   background: var(--accent);
   border-color: var(--accent);
   color: white;
+}
+
+.toggle-container {
+  flex: 1;
+  display: flex;
+}
+
+.toggle-container label {
+  width: 100%;
+  margin-bottom: 0;
+  cursor: pointer;
+}
+
+#subtitleToggle:not(:checked)+label {
+  background: var(--bg-secondary);
+  border-color: var(--border);
+  color: var(--text-secondary);
+}
+
+#subtitleToggle:not(:checked)+label span:first-child {
+  filter: grayscale(1);
+  opacity: 0.5;
 }
 
 /* Settings Panel */
@@ -304,6 +339,40 @@ header h1 {
   margin-top: 8px;
   font-size: 12px;
   color: var(--accent-light);
+}
+
+.save-settings-btn {
+  width: 100%;
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--accent-light);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.3s ease;
+}
+
+.save-settings-btn:hover {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+
+.save-settings-btn:active {
+  transform: translateY(1px);
+}
+
+.save-settings-btn.saved {
+  background: var(--success);
+  border-color: var(--success);
+  color: white;
 }
 
 /* Tips */

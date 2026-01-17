@@ -23,6 +23,10 @@
             return result;
         } catch (e) {
             console.error('Proxy fetch 失败:', e);
+            if (e.message.includes('Extension context invalidated')) {
+                console.warn('检测到扩展重载，正在自动刷新页面...');
+                window.location.reload();
+            }
             throw e;
         }
     }
@@ -266,7 +270,7 @@
         }
     }
 
-    async function startWhisperTranscription(videoUrl, language, apiKey) {
+    async function startWhisperTranscription(videoUrl, language, apiKey, service) {
         const result = await proxyFetch(`${WHISPER_SERVER}/transcribe`, {
             method: 'POST',
             headers: {
@@ -275,7 +279,8 @@
             body: JSON.stringify({
                 video_url: videoUrl,
                 language: language === 'auto' ? null : language,
-                api_key: apiKey
+                api_key: apiKey,
+                service: service || 'local'
             })
         });
 
@@ -355,7 +360,7 @@
         try {
             const service = genSettings.whisperService || 'local';
 
-            if (service === 'local') {
+            if (service === 'local' || service === 'groq' || service === 'openai') {
                 // 检查本地服务
                 const isAvailable = await checkWhisperService();
                 if (!isAvailable) {
@@ -368,7 +373,7 @@
                 sendProgress(5, '正在连接 Whisper 服务...');
 
                 // 开始转录任务
-                const task = await startWhisperTranscription(videoUrl, genSettings.language, genSettings.api_key);
+                const task = await startWhisperTranscription(videoUrl, genSettings.language, genSettings.api_key, service);
                 currentTaskId = task.task_id;
 
                 sendProgress(10, '任务已提交，开始处理...');
@@ -385,8 +390,6 @@
                     throw new Error('未识别到任何内容');
                 }
 
-            } else if (service === 'openai') {
-                throw new Error('OpenAI API 暂未实现，请使用本地 Whisper 服务');
             } else {
                 // 浏览器内置方式
                 await generateWithBrowserAPI(genSettings.language);

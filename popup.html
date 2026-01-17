@@ -33,7 +33,11 @@
         <div class="progress-bar">
           <div class="progress-fill" id="progressFill"></div>
         </div>
-        <div class="progress-text" id="progressText">准备中...</div>
+        <div class="progress-info"
+          style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px; color: var(--text-secondary);">
+          <div class="progress-text" id="progressText">准备中...</div>
+          <div id="progressPercentage">0%</div>
+        </div>
       </div>
 
       <!-- 主控制按钮 -->
@@ -42,11 +46,19 @@
         <span class="btn-text">生成字幕</span>
       </button>
 
+      <button class="main-btn secondary-btn" id="batchBtn" style="display: none;">
+        <span class="btn-icon">📚</span>
+        <span class="btn-text">批量生成列表字幕</span>
+      </button>
+
       <!-- 字幕控制（生成后显示） -->
       <div class="subtitle-controls" id="subtitleControls" style="display: none;">
-        <button class="control-btn active" id="toggleSubtitleBtn">
-          <span>👁️</span> 显示字幕
-        </button>
+        <div class="toggle-container">
+          <input type="checkbox" id="subtitleToggle" checked style="display: none;">
+          <label for="subtitleToggle" class="control-btn active" id="toggleSubtitleLabel">
+            <span>👁️</span> <span id="toggleText">字幕已开启</span>
+          </label>
+        </div>
         <button class="control-btn" id="downloadBtn">
           <span>💾</span> 下载 SRT
         </button>
@@ -75,14 +87,15 @@
           <label for="whisperService">识别服务</label>
           <select id="whisperService">
             <option value="local">本地 Whisper (推荐)</option>
-            <option value="browser">浏览器内置 (需播放)</option>
+            <option value="groq">Groq API (极速)</option>
             <option value="openai">OpenAI Whisper API</option>
+            <option value="browser">浏览器内置 (需播放)</option>
           </select>
         </div>
 
         <div class="setting-item api-key-setting" id="apiKeySetting" style="display: none;">
-          <label for="apiKey">OpenAI API Key</label>
-          <input type="password" id="apiKey" placeholder="sk-...">
+          <label for="apiKey" id="apiKeyLabel">API Key</label>
+          <input type="password" id="apiKey" placeholder="输入 API Key">
         </div>
 
         <div class="setting-item">
@@ -98,6 +111,10 @@
             <option value="top">顶部</option>
           </select>
         </div>
+
+        <button class="save-settings-btn" id="saveSettingsBtn">
+          <span>💾</span> 保存配置信息
+        </button>
       </div>
 
       <!-- 提示信息 -->

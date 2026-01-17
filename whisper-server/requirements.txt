@@ -1,8 +1,4 @@
-fastapi
-uvicorn[standard]
-yt-dlp
-python-multipart
-pydantic
-httpx
 faster-whisper
 pymongo
+dnspython
+httpx
