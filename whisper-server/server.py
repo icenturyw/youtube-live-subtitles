@@ -513,34 +513,68 @@ def transcribe_via_api(audio_path, task_id, language, api_key, service='groq'):
     except Exception as e:
         raise Exception(f"{service.upper()} API 调用失败: {str(e)}")
 
-def process_video_task(video_url, task_id, language, api_key=None, service='local'):
+def process_video_task(video_url, task_id, language, api_key=None, service='local', target_lang=None):
     """
     单个视频处理逻辑，由 Worker 调用
     """
     try:
         video_id = get_video_id(video_url)
         
-        # 再次检查缓存 (防止排队期间其他任务已生成)
+        # 再次检查缓存
         cached = get_cached_subtitles(video_id)
         if cached:
-            update_task(task_id, 'completed', 100, '从缓存加载',
-                       cached['subtitles'], cached.get('language'))
-            return
+            # 如果缓存中已有我们需要的翻译语言，或者用户未开启翻译，则直接返回
+            cached_subs = cached.get('subtitles', [])
+            has_translation = any(sub.get('translation') for sub in cached_subs if sub.get('text'))
+            
+            if not target_lang or (target_lang == cached.get('language')) or has_translation:
+                update_task(task_id, 'completed', 100, '从缓存加载',
+                           cached_subs, cached.get('language'))
+                return
+            else:
+                logging.info(f"缓存中缺少翻译内容，将重新处理翻译流程 (Target: {target_lang})")
+                # 如果有缓存但没翻译，我们可以直接使用缓存的字幕进行翻译，而不必重新下载识别
+                subtitles = cached_subs
+                lang = cached.get('language')
+                
+                # 执行翻译逻辑
+                effective_key = api_key or (GROQ_API_KEY if service == 'groq' else OPENAI_API_KEY)
+                if effective_key:
+                    update_task(task_id, 'transcribing', 90, f'正在为缓存字幕请求翻译 ({target_lang})...')
+                    subtitles = translate_subtitles(subtitles, target_lang, effective_key, 'groq' if GROQ_API_KEY else 'openai')
+                    # 更新缓存
+                    save_subtitles_cache(video_id, subtitles, lang)
+                    update_task(task_id, 'completed', 100, '翻译已更新', subtitles, lang)
+                    return
+                else:
+                    logging.warning("需要翻译但未提供 API Key，将继续全量流程或报错")
         
-        # 下载
+        # 下载 (如果没有缓存或无法直接翻译缓存)
         audio_path = download_audio(video_url, task_id)
         
         # 转录
+        effective_key = api_key or (GROQ_API_KEY if service == 'groq' else OPENAI_API_KEY)
         if service in ['groq', 'openai']:
-            effective_key = api_key or (GROQ_API_KEY if service == 'groq' else OPENAI_API_KEY)
             if effective_key:
                 subtitles, lang = transcribe_via_api(audio_path, task_id, language, effective_key, service)
+                
+                # 如果需要翻译
+                if target_lang and target_lang != lang:
+                    update_task(task_id, 'transcribing', 90, f'正在翻译为 {target_lang}...')
+                    subtitles = translate_subtitles(subtitles, target_lang, effective_key, service)
             else:
-                raise Exception(f"未提供 {service.upper()} API Key，请在设置中输入或配置环境变量")
+                raise Exception(f"未提供 {service.upper()} API Key")
         else:
             if not HAS_LOCAL_WHISPER:
                 raise Exception("本地 Whisper 依赖未安装，且未提供有效的 API Key")
             subtitles, lang = transcribe_locally(audio_path, task_id, language)
+            
+            # 本地模式翻译 (如果有配置 API Key)
+            if target_lang and (GROQ_API_KEY or OPENAI_API_KEY):
+                update_task(task_id, 'transcribing', 90, f'正在翻译为 {target_lang}...')
+                api_key = GROQ_API_KEY or OPENAI_API_KEY
+                service = 'groq' if GROQ_API_KEY else 'openai'
+                subtitles = translate_subtitles(subtitles, target_lang, api_key, service)
         
         # 缓存
         save_subtitles_cache(video_id, subtitles, lang)
@@ -557,7 +591,111 @@ def process_video_task(video_url, task_id, language, api_key=None, service='loca
         logging.error(f"任务 {task_id} 失败: {e}")
         update_task(task_id, 'error', 0, str(e))
 
-def process_local_file_task(file_path, task_id, language, api_key=None, service='local'):
+def translate_subtitles(subtitles, target_lang, api_key, service='groq'):
+    """
+    使用 LLM 批量翻译字幕
+    """
+    if not subtitles or not target_lang:
+        return subtitles
+
+    logging.info(f"开始翻译 {len(subtitles)} 条字幕到 {target_lang} [Service: {service}]")
+    
+    # 将字幕合并为带 ID 的文本块，减少 API 调用次数并保持上下文
+    # 每 30 条一组进行批处理
+    batch_size = 30
+    translated_subtitles = []
+    
+    url = "https://api.groq.com/openai/v1/chat/completions" if service == 'groq' else "https://api.openai.com/v1/chat/completions"
+    model_name = "llama-3.3-70b-versatile" if service == 'groq' else "gpt-4o-mini" # Groq 推荐用大模型翻译效果更好
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    lang_map = {
+        'zh': '中文 (Simplified Chinese)',
+        'en': '英文 (English)',
+        'ja': '日文 (Japanese)',
+        'ko': '韩文 (Korean)',
+        'fr': '法语 (French)',
+        'de': '德语 (German)',
+        'es': '西班牙语 (Spanish)',
+        'ru': '俄语 (Russian)'
+    }
+    target_lang_name = lang_map.get(target_lang, target_lang)
+
+    for i in range(0, len(subtitles), batch_size):
+        batch = subtitles[i : i + batch_size]
+        
+        # 构建 Prompt
+        batch_text = "\n".join([f"[{j}] {sub['text']}" for j, sub in enumerate(batch)])
+        
+        prompt = f"""You are a professional video subtitle translator. 
+Translate the following {len(batch)} subtitle lines into {target_lang_name}.
+
+Rules:
+1. Maintain the exact numbering format: [index] translated_text
+2. One line per subtitle.
+3. Keep the original tone and avoid adding explanations.
+4. Return ONLY the translated lines.
+
+Subtitles to translate:
+{batch_text}
+"""
+
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": "You are a professional translation engine. You always follow the requested format perfectly."},
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.1, # 降低温度以获得更稳定的格式
+            "top_p": 1
+        }
+
+        try:
+            response = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+            if response.status_code == 200:
+                result = response.json()
+                translated_lines = result['choices'][0]['message']['content'].strip().split('\n')
+                
+                # 解析翻译结果并对应到原字幕
+                temp_map = {}
+                logging.info(f"LLM 响应样例: {translated_lines[0] if translated_lines else 'EMPTY'}")
+                
+                for line in translated_lines:
+                    import re
+                    # 增强正则，兼容更多格式: [1] text, 1. text, [1]: text, etc.
+                    match = re.search(r'(?:\[|(?:\b))(\d+)(?:\]|\.)[:\s]*(.*)', line)
+                    if match:
+                        try:
+                            idx = int(match.group(1))
+                            trans_text = match.group(2).strip()
+                            if trans_text:
+                                temp_map[idx] = trans_text
+                        except:
+                            continue
+                
+                # 填充翻译
+                for j in range(len(batch)):
+                    # 如果匹配失败，保留空串而不是覆盖
+                    if j in temp_map:
+                        batch[j]['translation'] = temp_map[j]
+                    elif 'translation' not in batch[j]:
+                        batch[j]['translation'] = ""
+            else:
+                logging.error(f"翻译 API 失败: {response.text}")
+                for sub in batch: sub['translation'] = ""
+        except Exception as e:
+            logging.error(f"翻译异常: {e}")
+            for sub in batch: sub['translation'] = ""
+            
+        translated_subtitles.extend(batch)
+
+    return translated_subtitles
+
+def process_local_file_task(file_path, task_id, language, api_key=None, service='local', target_lang=None):
     """
     处理本地文件上传的任务
     """
@@ -569,14 +707,26 @@ def process_local_file_task(file_path, task_id, language, api_key=None, service=
             effective_key = api_key or (GROQ_API_KEY if service == 'groq' else OPENAI_API_KEY)
             if effective_key:
                 subtitles, lang = transcribe_via_api(file_path, task_id, language, effective_key, service)
+                
+                # 如果需要翻译
+                if target_lang and target_lang != lang:
+                    update_task(task_id, 'transcribing', 90, f'正在翻译为 {target_lang}...')
+                    subtitles = translate_subtitles(subtitles, target_lang, effective_key, service)
             else:
                 raise Exception(f"未提供 {service.upper()} API Key")
         else:
             if not HAS_LOCAL_WHISPER:
                 raise Exception("本地 Whisper 依赖未安装，且未提供有效的 API Key")
             subtitles, lang = transcribe_locally(file_path, task_id, language)
+            
+            # 本地模式目前不支持翻译（除非配置了 API Key）
+            if target_lang and (GROQ_API_KEY or OPENAI_API_KEY):
+                update_task(task_id, 'transcribing', 90, f'正在翻译为 {target_lang}...')
+                api_key = GROQ_API_KEY or OPENAI_API_KEY
+                service = 'groq' if GROQ_API_KEY else 'openai'
+                subtitles = translate_subtitles(subtitles, target_lang, api_key, service)
         
-        # 完成（本地文件不缓存到 MongoDB，因为没有 video_id）
+        # 完成 (本地文件不缓存)
         update_task(task_id, 'completed', 100, f'完成！共 {len(subtitles)} 条',
                    subtitles, lang)
         
@@ -609,11 +759,13 @@ def worker():
             if 'local_file' in task:
                 local_file = task['local_file']
                 logging.info(f"开始处理本地文件: {task_id} ({local_file}) [Service: {service}]")
-                process_local_file_task(local_file, task_id, language, api_key, service)
+                process_local_file_task(local_file, task_id, language, api_key, service, 
+                                      target_lang=task.get('target_lang'))
             else:
                 video_url = task['video_url']
                 logging.info(f"开始处理任务: {task_id} ({video_url}) [Service: {service}]")
-                process_video_task(video_url, task_id, language, api_key, service)
+                process_video_task(video_url, task_id, language, api_key, service,
+                                 target_lang=task.get('target_lang'))
             
             task_queue.task_done()
             logging.info(f"任务完成: {task_id}, 队列剩余: {task_queue.qsize()}")
@@ -761,6 +913,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             language = data.get('language')
             api_key = data.get('api_key')
             service = data.get('service', 'local')
+            target_lang = data.get('target_lang') # 提取翻译目标语言
             video_id = get_video_id(video_url)
             # 使用简单的 task_id (video_id)，方便前端查询状态
             task_id = video_id 
@@ -782,7 +935,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 'task_id': task_id,
                 'language': language,
                 'api_key': api_key,
-                'service': service
+                'service': service,
+                'target_lang': target_lang
             })
             
             self._send_json({
@@ -798,6 +952,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             language = data.get('language')
             service = data.get('service', 'local')
             api_key = data.get('api_key')
+            target_lang = data.get('target_lang')
             
             if not playlist_url:
                 self._send_json({'error': '缺少 playlist_url'}, 400)
@@ -826,7 +981,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                         'task_id': task_id,
                         'language': language,
                         'service': svc,
-                        'api_key': key
+                        'api_key': key,
+                        'target_lang': target_lang
                     })
                     added_count += 1
                 logging.info(f"批量添加完成，新增 {added_count} 个任务 (服务: {svc})")
@@ -888,7 +1044,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     'task_id': task_id,
                     'language': language,
                     'service': service,
-                    'api_key': api_key
+                    'api_key': api_key,
+                    'target_lang': target_lang
                 })
 
                 self._send_json({

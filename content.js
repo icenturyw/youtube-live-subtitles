@@ -34,6 +34,8 @@
     // ============ 状态变量 ============
     let subtitles = [];
     let subtitleContainer = null;
+    let sidebarContainer = null;
+    let sidebarVisible = false;
     let isVisible = true;
     let settings = {
         fontSize: 24,
@@ -48,6 +50,7 @@
     let videoElement = null;
     let isProcessing = false;
     let currentTaskId = null;
+    let activeTranscriptIndex = -1;
 
     // ============ 初始化 ============
     function init() {
@@ -151,20 +154,22 @@
 
     // ============ 字幕同步逻辑 ============
     function onTimeUpdate() {
-        if (!subtitles.length || !isVisible || !videoElement) return;
+        if (!subtitles.length || !videoElement) return;
 
         const currentTime = videoElement.currentTime;
-        const subtitle = findSubtitleAtTime(currentTime);
+        const subtitleIndex = findSubtitleIndexAtTime(currentTime);
 
-        if (subtitle) {
-            showSubtitle(subtitle.text);
+        if (subtitleIndex !== -1) {
+            const subtitle = subtitles[subtitleIndex];
+            if (isVisible) showSubtitle(subtitle); // 传整个对象以便显示译文
+            updateActiveTranscriptItem(subtitleIndex);
         } else {
-            showSubtitle('');
+            if (isVisible) showSubtitle(null);
         }
     }
 
-    // 二分查找字幕
-    function findSubtitleAtTime(time) {
+    // 查找当前时间的字幕索引
+    function findSubtitleIndexAtTime(time) {
         let left = 0;
         let right = subtitles.length - 1;
 
@@ -173,15 +178,14 @@
             const sub = subtitles[mid];
 
             if (time >= sub.start && time <= sub.end) {
-                return sub;
+                return mid;
             } else if (time < sub.start) {
                 right = mid - 1;
             } else {
                 left = mid + 1;
             }
         }
-
-        return null;
+        return -1;
     }
 
     function onSeeking() {
@@ -211,11 +215,153 @@
         if (player) {
             player.style.position = 'relative';
             player.appendChild(subtitleContainer);
+
+            // 如果有字幕且没有侧边栏开关，创建一个
+            createSidebarToggle();
         } else {
             document.body.appendChild(subtitleContainer);
         }
 
         console.log('字幕容器已创建');
+    }
+
+    function createSidebarToggle() {
+        let toggleBtn = document.getElementById('yt-sidebar-toggle');
+        if (toggleBtn) return;
+
+        toggleBtn = document.createElement('button');
+        toggleBtn.id = 'yt-sidebar-toggle';
+        toggleBtn.className = 'yt-sidebar-toggle-btn';
+        toggleBtn.innerHTML = '📝';
+        toggleBtn.title = '打开/关闭转录稿侧边栏';
+
+        toggleBtn.onclick = () => {
+            toggleSidebar();
+        };
+
+        document.body.appendChild(toggleBtn);
+    }
+
+    function toggleSidebar() {
+        if (!sidebarContainer) {
+            createSidebar();
+        }
+
+        sidebarVisible = !sidebarVisible;
+        if (sidebarVisible) {
+            sidebarContainer.classList.remove('collapsed');
+            renderTranscript();
+        } else {
+            sidebarContainer.classList.add('collapsed');
+        }
+    }
+
+    function createSidebar() {
+        if (sidebarContainer) return;
+
+        sidebarContainer = document.createElement('div');
+        sidebarContainer.className = 'yt-transcript-sidebar collapsed';
+
+        sidebarContainer.innerHTML = `
+            <div class="yt-transcript-header">
+                <span class="yt-transcript-title">转录详情</span>
+                <button class="yt-transcript-close">×</button>
+            </div>
+            <div class="yt-transcript-content" id="yt-transcript-content">
+                <!-- 列表项将在这里渲染 -->
+            </div>
+        `;
+
+        document.body.appendChild(sidebarContainer);
+
+        sidebarContainer.querySelector('.yt-transcript-close').onclick = () => {
+            toggleSidebar();
+        };
+    }
+
+    function renderTranscript() {
+        const content = document.getElementById('yt-transcript-content');
+        if (!content) return;
+
+        content.innerHTML = '';
+        subtitles.forEach((sub, index) => {
+            const item = document.createElement('div');
+            item.className = 'yt-transcript-item';
+            if (index === activeTranscriptIndex) item.classList.add('active');
+            item.dataset.index = index;
+
+            const timeStr = formatTime(sub.start);
+            const textHtml = sub.translation
+                ? `<div class="original">${sub.text}</div><div class="translation">${sub.translation}</div>`
+                : `<div class="original">${sub.text}</div>`;
+
+            item.innerHTML = `
+                <div class="yt-transcript-time">${timeStr}</div>
+                <div class="yt-transcript-text">${textHtml}</div>
+            `;
+
+            item.onclick = () => {
+                if (videoElement) {
+                    videoElement.currentTime = sub.start;
+                    videoElement.play();
+                }
+            };
+
+            content.appendChild(item);
+        });
+
+        // 滚动到当前项
+        scrollToActiveItem();
+    }
+
+    function updateActiveTranscriptItem(index) {
+        if (activeTranscriptIndex === index) return;
+
+        activeTranscriptIndex = index;
+
+        if (!sidebarVisible) return;
+
+        const content = document.getElementById('yt-transcript-content');
+        if (!content) return;
+
+        // 移除旧的高亮
+        const prevActive = content.querySelector('.yt-transcript-item.active');
+        if (prevActive) prevActive.classList.remove('active');
+
+        // 添加新的高亮
+        const newActive = content.querySelector(`.yt-transcript-item[data-index="${index}"]`);
+        if (newActive) {
+            newActive.classList.add('active');
+            scrollToActiveItem();
+        }
+    }
+
+    function scrollToActiveItem() {
+        const content = document.getElementById('yt-transcript-content');
+        if (!content) return;
+
+        const activeItem = content.querySelector('.yt-transcript-item.active');
+        if (activeItem) {
+            const containerHeight = content.clientHeight;
+            const itemTop = activeItem.offsetTop;
+            const itemHeight = activeItem.clientHeight;
+
+            content.scrollTo({
+                top: itemTop - (containerHeight / 2) + (itemHeight / 2),
+                behavior: 'smooth'
+            });
+        }
+    }
+
+    function formatTime(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+
+        if (h > 0) {
+            return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+        }
+        return `${m}:${s.toString().padStart(2, '0')}`;
     }
 
     function removeSubtitleContainer() {
@@ -293,16 +439,26 @@
         }
     }
 
-    function showSubtitle(text) {
+    function showSubtitle(sub) {
         if (!subtitleContainer) {
-            if (text) createSubtitleContainer();
+            if (sub) createSubtitleContainer();
             else return;
         }
 
         const textElement = subtitleContainer.querySelector('#yt-custom-subtitle-text');
         if (textElement) {
-            textElement.textContent = text;
-            textElement.style.setProperty('display', text ? 'inline-block' : 'none', 'important');
+            if (!sub) {
+                textElement.style.setProperty('display', 'none', 'important');
+                return;
+            }
+
+            if (sub.translation) {
+                textElement.innerHTML = `<div class="yt-sub-original">${sub.text}</div><div class="yt-sub-translation">${sub.translation}</div>`;
+            } else {
+                textElement.textContent = sub.text;
+            }
+
+            textElement.style.setProperty('display', 'inline-block', 'important');
         }
     }
 
@@ -316,7 +472,7 @@
         }
     }
 
-    async function startWhisperTranscription(videoUrl, language, apiKey, service) {
+    async function startWhisperTranscription(videoUrl, language, apiKey, service, targetLang) {
         const result = await proxyFetch(`${WHISPER_SERVER}/transcribe`, {
             method: 'POST',
             headers: {
@@ -326,7 +482,8 @@
                 video_url: videoUrl,
                 language: language === 'auto' ? null : language,
                 api_key: apiKey,
-                service: service || 'local'
+                service: service || 'local',
+                target_lang: arguments[4] // 接收 targetLang 参数
             })
         });
 
@@ -418,7 +575,13 @@
                 sendProgress(5, '正在连接 Whisper 服务...');
 
                 // 开始转录任务
-                const task = await startWhisperTranscription(videoUrl, genSettings.language, genSettings.api_key, service);
+                const task = await startWhisperTranscription(
+                    videoUrl,
+                    genSettings.language,
+                    genSettings.api_key,
+                    service,
+                    genSettings.target_lang
+                );
                 currentTaskId = task.task_id;
 
                 sendProgress(10, '任务已提交，开始处理...');

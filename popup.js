@@ -40,6 +40,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const strokeWidthValue = document.getElementById('strokeWidthValue');
     const strokeColor = document.getElementById('strokeColor');
 
+    // 翻译设置元素
+    const translateBilingual = document.getElementById('translateBilingual');
+    const targetLanguage = document.getElementById('targetLanguage');
+
     let currentVideoId = null;
     let subtitlesVisible = true;
     let currentSubtitles = null;
@@ -131,7 +135,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     playlist_url: `https://www.youtube.com/playlist?list=${playlistId}`,
                     language: languageSelect.value,
                     service: whisperServiceSelect.value,
-                    api_key: apiKeyInput.value
+                    api_key: apiKeyInput.value,
+                    target_lang: translateBilingual.checked ? targetLanguage.value : null
                 })
             });
 
@@ -242,6 +247,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (apiKeyInput.value) {
             formData.append('api_key', apiKeyInput.value);
         }
+        if (translateBilingual.checked) {
+            formData.append('target_lang', targetLanguage.value);
+        }
 
         showProcessing('正在上传文件...', 0);
 
@@ -286,7 +294,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // 下载字幕按钮
+    // 下载按钮
     downloadBtn.addEventListener('click', async () => {
         if (!currentSubtitles || !currentVideoId) {
             showError('没有可下载的字幕');
@@ -297,14 +305,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         downloadFile(srtContent, `${currentVideoId}.srt`, 'text/plain');
     });
 
-    // 设置变更监听
-    // 字体大小变动只更新样式，不自动保存
+    // 样式变更监听
     fontSizeSlider.addEventListener('input', () => {
         fontSizeValue.textContent = fontSizeSlider.value + 'px';
         updateSubtitleStyle();
     });
 
-    // 样式自定义变更监听（实时预览）
     bgOpacity.addEventListener('input', () => {
         bgOpacityValue.textContent = bgOpacity.value + '%';
         updateSubtitleStyle();
@@ -319,21 +325,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     bgColor.addEventListener('input', () => updateSubtitleStyle());
     fontFamily.addEventListener('change', () => updateSubtitleStyle());
     strokeColor.addEventListener('input', () => updateSubtitleStyle());
+    positionSelect.addEventListener('change', () => updateSubtitleStyle());
 
-
-    positionSelect.addEventListener('change', () => {
-        updateSubtitleStyle();
-    });
-
-    // 保存按钮点击事件
+    // 保存配置按钮
     saveSettingsBtn.addEventListener('click', async () => {
         saveSettingsBtn.disabled = true;
         const originalText = saveSettingsBtn.innerHTML;
         saveSettingsBtn.innerHTML = '<span>⏳</span> 正在保存...';
 
         await saveSettings();
-
-        // 立即应用样式更新到当前字幕
         await updateSubtitleStyle();
 
         setTimeout(() => {
@@ -348,12 +348,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, 500);
     });
 
-    // ============ 函数定义 ============ 
+    // ============ 函数定义 ============
 
     async function loadSettings() {
         const settings = await chrome.storage.local.get([
             'language', 'whisperService', 'apiKey', 'fontSize', 'position', 'subtitlesVisible',
-            'subtitleColor', 'bgColor', 'bgOpacity', 'fontFamily', 'strokeWidth', 'strokeColor'
+            'subtitleColor', 'bgColor', 'bgOpacity', 'fontFamily', 'strokeWidth', 'strokeColor',
+            'translateBilingual', 'targetLanguage'
         ]);
 
         if (settings.language) languageSelect.value = settings.language;
@@ -378,7 +379,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (settings.position) positionSelect.value = settings.position;
 
-        // 加载样式设置
         if (settings.subtitleColor) subtitleColor.value = settings.subtitleColor;
         if (settings.bgColor) bgColor.value = settings.bgColor;
         if (settings.bgOpacity) {
@@ -391,6 +391,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             strokeWidthValue.textContent = settings.strokeWidth + 'px';
         }
         if (settings.strokeColor) strokeColor.value = settings.strokeColor;
+
+        if (settings.translateBilingual !== undefined) translateBilingual.checked = settings.translateBilingual;
+        if (settings.targetLanguage) targetLanguage.value = settings.targetLanguage;
 
         if (settings.subtitlesVisible !== undefined) {
             subtitlesVisible = settings.subtitlesVisible;
@@ -407,88 +410,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             fontSize: parseInt(fontSizeSlider.value),
             position: positionSelect.value,
             subtitlesVisible: subtitleToggle.checked,
-            // 样式设置
             subtitleColor: subtitleColor.value,
             bgColor: bgColor.value,
             bgOpacity: parseInt(bgOpacity.value),
             fontFamily: fontFamily.value,
             strokeWidth: parseFloat(strokeWidth.value),
-            strokeColor: strokeColor.value
+            strokeColor: strokeColor.value,
+            translateBilingual: translateBilingual.checked,
+            targetLanguage: targetLanguage.value
         });
-    }
-
-    async function updateSubtitleStyle() {
-        const { tab } = await checkYouTubePage();
-        if (tab) {
-            sendMessageToContentScript(tab.id, {
-                action: 'updateStyle',
-                style: getCurrentSettings()
-            }).catch(e => console.log('无法发送样式更新消息:', e));
-        }
-    }
-
-    async function checkService() {
-        if (whisperServiceSelect.value === 'local') {
-            try {
-                // 添加超时控制，3秒超时
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-                const response = await fetch('http://127.0.0.1:8765/', {
-                    method: 'GET',
-                    mode: 'cors',
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
-
-                if (response.ok) {
-                    const data = await response.json();
-                    statusIndicator.className = 'status-indicator';
-                    // 显示队列状态
-                    if (data.queue_size !== undefined && data.queue_size > 0) {
-                        statusText.textContent = `服务就绪 (队列: ${data.queue_size})`;
-                    } else {
-                        statusText.textContent = 'Whisper 服务已就绪';
-                    }
-                } else {
-                    throw new Error();
-                }
-            } catch (e) {
-                statusIndicator.className = 'status-indicator error';
-                if (e.name === 'AbortError') {
-                    statusText.textContent = 'Whisper 服务连接超时';
-                } else {
-                    statusText.textContent = 'Whisper 服务未运行';
-                }
-            }
-        }
-    }
-
-    async function checkServiceAvailable(tabId) {
-        try {
-            const result = await sendMessageToContentScript(tabId, {
-                action: 'checkService'
-            });
-            return result.available;
-        } catch (e) {
-            return false;
-        }
-    }
-
-    async function checkYouTubePage() {
-        try {
-            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (!tab.url || !tab.url.includes('youtube.com/watch')) {
-                return { isYouTube: false, tab: null, videoId: null, playlistId: null };
-            }
-
-            const url = new URL(tab.url);
-            const videoId = url.searchParams.get('v');
-            const playlistId = url.searchParams.get('list');
-            return { isYouTube: true, tab, videoId, playlistId };
-        } catch (e) {
-            return { isYouTube: false, tab: null, videoId: null, playlistId: null };
-        }
     }
 
     function getCurrentSettings() {
@@ -504,17 +434,76 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
     }
 
+    async function updateSubtitleStyle() {
+        const { tab } = await checkYouTubePage();
+        if (tab) {
+            sendMessageToContentScript(tab.id, {
+                action: 'updateStyle',
+                style: getCurrentSettings()
+            }).catch(e => console.log('无法发送样式更新消息:', e));
+        }
+    }
+
+    async function checkService() {
+        if (whisperServiceSelect.value === 'local') {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                const response = await fetch('http://127.0.0.1:8765/', {
+                    method: 'GET',
+                    mode: 'cors',
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    statusIndicator.className = 'status-indicator';
+                    if (data.queue_size !== undefined && data.queue_size > 0) {
+                        statusText.textContent = `服务就绪 (队列: ${data.queue_size})`;
+                    } else {
+                        statusText.textContent = 'Whisper 服务已就绪';
+                    }
+                } else {
+                    throw new Error();
+                }
+            } catch (e) {
+                statusIndicator.className = 'status-indicator error';
+                statusText.textContent = e.name === 'AbortError' ? 'Whisper 服务连接超时' : 'Whisper 服务未运行';
+            }
+        }
+    }
+
+    async function checkServiceAvailable(tabId) {
+        try {
+            const result = await sendMessageToContentScript(tabId, { action: 'checkService' });
+            return result.available;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    async function checkYouTubePage() {
+        try {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (!tab.url || !tab.url.includes('youtube.com/watch')) {
+                return { isYouTube: false, tab: null, videoId: null, playlistId: null };
+            }
+            const url = new URL(tab.url);
+            return { isYouTube: true, tab, videoId: url.searchParams.get('v'), playlistId: url.searchParams.get('list') };
+        } catch (e) {
+            return { isYouTube: false, tab: null, videoId: null, playlistId: null };
+        }
+    }
+
     async function checkExistingSubtitles() {
         const { videoId } = await checkYouTubePage();
         if (!videoId) return;
-
         currentVideoId = videoId;
         const cached = await chrome.storage.local.get(`subtitles_${videoId}`);
-
         if (cached[`subtitles_${videoId}`]) {
             currentSubtitles = cached[`subtitles_${videoId}`];
             showSubtitlesReady();
-
             const { tab } = await checkYouTubePage();
             if (tab) {
                 await ensureContentScriptLoaded(tab.id);
@@ -530,20 +519,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function startSubtitleGeneration(tab) {
         generateBtn.disabled = true;
         showProcessing('连接 Whisper 服务...');
-
         try {
+            // 如果开启了双语，先清除本地缓存，强制刷新显示
+            if (translateBilingual.checked && currentVideoId) {
+                await chrome.storage.local.remove(`subtitles_${currentVideoId}`);
+            }
             await ensureContentScriptLoaded(tab.id);
-
             const result = await sendMessageToContentScript(tab.id, {
                 action: 'generateSubtitles',
                 settings: {
                     language: languageSelect.value,
                     whisperService: whisperServiceSelect.value,
                     api_key: apiKeyInput.value,
+                    target_lang: translateBilingual.checked ? targetLanguage.value : null,
                     ...getCurrentSettings()
                 }
             });
-
             if (!result.success && result.error) {
                 showError(result.error);
                 generateBtn.disabled = false;
@@ -561,11 +552,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else if (message.type === 'subtitlesReady') {
                 currentSubtitles = message.subtitles;
                 if (currentVideoId) {
-                    chrome.storage.local.set({
-                        [`subtitles_${currentVideoId}`]: message.subtitles
-                    });
+                    chrome.storage.local.set({ [`subtitles_${currentVideoId}`]: message.subtitles });
                 }
                 showSubtitlesReady();
+                renderTranscript(); // 此时更新侧边栏
                 generateBtn.disabled = false;
             } else if (message.type === 'error') {
                 showError(message.message);
@@ -576,14 +566,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function ensureContentScriptLoaded(tabId) {
         try {
-            await chrome.scripting.executeScript({
-                target: { tabId },
-                files: ['content.js']
-            });
-            await chrome.scripting.insertCSS({
-                target: { tabId },
-                files: ['subtitles.css']
-            });
+            await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+            await chrome.scripting.insertCSS({ target: { tabId }, files: ['subtitles.css', 'sidebar.css'] });
         } catch (e) { }
     }
 
@@ -591,20 +575,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             return await chrome.tabs.sendMessage(tabId, message);
         } catch (e) {
-            // 尝试注入后重试
             await ensureContentScriptLoaded(tabId);
             await new Promise(r => setTimeout(r, 500));
             return await chrome.tabs.sendMessage(tabId, message);
         }
     }
 
-    // UI 更新
-    function showProcessing(text) {
+    function showProcessing(text, percent = 0) {
         statusIndicator.className = 'status-indicator processing';
         statusText.textContent = text;
         progressContainer.style.display = 'block';
-        progressFill.style.width = '0%';
-        if (progressPercentage) progressPercentage.textContent = '0%';
+        progressFill.style.width = percent + '%';
+        if (progressPercentage) progressPercentage.textContent = percent + '%';
         progressText.textContent = text;
         subtitleControls.style.display = 'none';
     }
@@ -630,18 +612,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusIndicator.className = 'status-indicator error';
         statusText.textContent = message;
         progressContainer.style.display = 'none';
-
-        setTimeout(() => {
-            checkService();
-        }, 5000);
+        setTimeout(() => { checkService(); }, 5000);
     }
 
-    // 工具函数
     function convertToSRT(subtitles) {
         return subtitles.map((sub, index) => {
             const startTime = formatSRTTime(sub.start);
             const endTime = formatSRTTime(sub.end);
-            return `${index + 1}\n${startTime} --> ${endTime}\n${sub.text}\n`;
+            const text = sub.translation ? `${sub.text}\n${sub.translation}` : sub.text;
+            return `${index + 1}\n${startTime} --> ${endTime}\n${text}\n`;
         }).join('\n');
     }
 

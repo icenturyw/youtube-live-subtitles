@@ -40,7 +40,8 @@
                 "content.js"
             ],
             "css": [
-                "subtitles.css"
+                "subtitles.css",
+                "sidebar.css"
             ],
             "run_at": "document_end"
         }

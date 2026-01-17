@@ -112,6 +112,28 @@
           <input type="password" id="apiKey" placeholder="输入 API Key">
         </div>
 
+        <div class="style-section">
+          <h4>🌍 翻译设置</h4>
+          <div class="setting-item">
+            <label class="switch-label" for="translateBilingual">启用双语字幕</label>
+            <label class="switch">
+              <input type="checkbox" id="translateBilingual">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="setting-item">
+            <label for="targetLanguage">目标语言</label>
+            <select id="targetLanguage">
+              <option value="zh">中文 (简体)</option>
+              <option value="en">英文</option>
+              <option value="ja">日文</option>
+              <option value="ko">韩文</option>
+              <option value="fr">法语</option>
+              <option value="de">德语</option>
+            </select>
+          </div>
+        </div>
+
         <div class="setting-item">
           <label for="fontSize">字幕大小</label>
           <input type="range" id="fontSize" min="16" max="36" value="24">
