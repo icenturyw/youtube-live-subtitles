@@ -283,31 +283,96 @@ def compress_audio_for_api(audio_path, task_id):
         return audio_path
 
 def split_text(text, max_len=25):
+    """
+    语义化断句：优先在标点符号和自然停顿处断句
+    """
     if converter:
         text = converter.convert(text)
     
     if len(text) <= max_len:
         return [text]
     
-    parts = re.split(r'([，。！？, \.! \?])', text)
+    # 定义连接词（在这些词之前可以断句）
+    connectors = ['但是', '所以', '因此', '然后', '而且', '并且', '或者', '不过', '但', '而', 
+                  'but', 'so', 'therefore', 'then', 'and', 'or', 'however', 'yet']
+    
+    # 定义句子终止符（优先级最高）
+    sentence_endings = r'([。！？；.!?;])'
+    # 定义次级标点（优先级次之）
+    minor_punctuations = r'([，,、])'
+    
+    # 首先尝试在句子终止符处分割
+    sentences = re.split(sentence_endings, text)
     result = []
     current = ""
     
-    if len(parts) == 1:
-        current = parts[0]
-    else:
-        for i in range(0, len(parts)-1, 2):
-            p = parts[i] + parts[i+1]
-            if len(current) + len(p) > max_len and current:
+    i = 0
+    while i < len(sentences):
+        part = sentences[i]
+        
+        # 如果是标点符号，附加到前一个部分
+        if i + 1 < len(sentences) and re.match(sentence_endings, sentences[i + 1]):
+            part += sentences[i + 1]
+            i += 2
+        else:
+            i += 1
+        
+        # 如果当前部分本身就过长，需要进一步拆分
+        if len(part) > max_len:
+            # 尝试在次级标点处分割
+            sub_parts = re.split(minor_punctuations, part)
+            sub_current = ""
+            
+            j = 0
+            while j < len(sub_parts):
+                sub_part = sub_parts[j]
+                
+                if j + 1 < len(sub_parts) and re.match(minor_punctuations, sub_parts[j + 1]):
+                    sub_part += sub_parts[j + 1]
+                    j += 2
+                else:
+                    j += 1
+                
+                # 检查是否在连接词前可以断句
+                can_split_at_connector = False
+                for conn in connectors:
+                    if sub_part.strip().startswith(conn):
+                        can_split_at_connector = True
+                        break
+                
+                if len(sub_current) + len(sub_part) > max_len and sub_current:
+                    result.append(sub_current.strip())
+                    sub_current = sub_part
+                elif can_split_at_connector and sub_current and len(sub_current) > max_len * 0.5:
+                    # 如果遇到连接词且当前已经有一定长度，可以在此断句
+                    result.append(sub_current.strip())
+                    sub_current = sub_part
+                else:
+                    sub_current += sub_part
+            
+            # 处理剩余的子部分
+            if sub_current:
+                if len(sub_current) > max_len:
+                    # 强制按字符数截断（最后的手段）
+                    while len(sub_current) > max_len:
+                        result.append(sub_current[:max_len].strip())
+                        sub_current = sub_current[max_len:]
+                if sub_current.strip():
+                    current = sub_current
+        else:
+            # 正常累加
+            if len(current) + len(part) > max_len and current:
                 result.append(current.strip())
-                current = p
+                current = part
             else:
-                current += p
+                current += part
     
+    # 处理最后剩余的部分
     if current:
-        while len(current) > max_len:
-            result.append(current[:max_len].strip())
-            current = current[max_len:]
+        if len(current) > max_len:
+            while len(current) > max_len:
+                result.append(current[:max_len].strip())
+                current = current[max_len:]
         if current.strip():
             result.append(current.strip())
     
@@ -492,6 +557,40 @@ def process_video_task(video_url, task_id, language, api_key=None, service='loca
         logging.error(f"任务 {task_id} 失败: {e}")
         update_task(task_id, 'error', 0, str(e))
 
+def process_local_file_task(file_path, task_id, language, api_key=None, service='local'):
+    """
+    处理本地文件上传的任务
+    """
+    try:
+        update_task(task_id, 'transcribing', 10, '正在处理本地文件...')
+        
+        # 转录
+        if service in ['groq', 'openai']:
+            effective_key = api_key or (GROQ_API_KEY if service == 'groq' else OPENAI_API_KEY)
+            if effective_key:
+                subtitles, lang = transcribe_via_api(file_path, task_id, language, effective_key, service)
+            else:
+                raise Exception(f"未提供 {service.upper()} API Key")
+        else:
+            if not HAS_LOCAL_WHISPER:
+                raise Exception("本地 Whisper 依赖未安装，且未提供有效的 API Key")
+            subtitles, lang = transcribe_locally(file_path, task_id, language)
+        
+        # 完成（本地文件不缓存到 MongoDB，因为没有 video_id）
+        update_task(task_id, 'completed', 100, f'完成！共 {len(subtitles)} 条',
+                   subtitles, lang)
+        
+        # 清理临时文件
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+    except Exception as e:
+        logging.error(f"本地文件任务 {task_id} 失败: {e}")
+        update_task(task_id, 'error', 0, str(e))
+        # 清理失败的文件
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
 def worker():
     """
     后台工作线程：不断从队列取任务执行
@@ -501,14 +600,20 @@ def worker():
         try:
             # 阻塞等待任务
             task = task_queue.get()
-            video_url = task['video_url']
             task_id = task['task_id']
             language = task.get('language')
             api_key = task.get('api_key')
             service = task.get('service', 'local')
             
-            logging.info(f"开始处理任务: {task_id} ({video_url}) [Service: {service}]")
-            process_video_task(video_url, task_id, language, api_key, service)
+            # 检查是否为本地文件上传
+            if 'local_file' in task:
+                local_file = task['local_file']
+                logging.info(f"开始处理本地文件: {task_id} ({local_file}) [Service: {service}]")
+                process_local_file_task(local_file, task_id, language, api_key, service)
+            else:
+                video_url = task['video_url']
+                logging.info(f"开始处理任务: {task_id} ({video_url}) [Service: {service}]")
+                process_video_task(video_url, task_id, language, api_key, service)
             
             task_queue.task_done()
             logging.info(f"任务完成: {task_id}, 队列剩余: {task_queue.qsize()}")
@@ -732,6 +837,69 @@ class RequestHandler(BaseHTTPRequestHandler):
                 'status': 'success',
                 'message': '正在后台解析列表并添加到队列，请稍候...'
             })
+
+        # 3. 本地文件上传接口
+        elif self.path == '/upload':
+            content_type = self.headers.get('Content-Type', '')
+            if not content_type.startswith('multipart/form-data'):
+                self._send_json({'error': '需要 multipart/form-data 格式'}, 400)
+                return
+
+            try:
+                # 解析 multipart 数据
+                import cgi
+                form = cgi.FieldStorage(
+                    fp=self.rfile,
+                    headers=self.headers,
+                    environ={'REQUEST_METHOD': 'POST'}
+                )
+
+                if 'file' not in form:
+                    self._send_json({'error': '未找到文件'}, 400)
+                    return
+
+                file_item = form['file']
+                if not file_item.file:
+                    self._send_json({'error': '文件为空'}, 400)
+                    return
+
+                # 生成唯一任务 ID
+                task_id = hashlib.md5(f"{file_item.filename}_{time.time()}".encode()).hexdigest()[:11]
+
+                # 保存文件
+                file_path = TEMP_DIR / f"{task_id}_{file_item.filename}"
+                with open(file_path, 'wb') as f:
+                    f.write(file_item.file.read())
+
+                # 获取其他参数
+                language = form.getvalue('language', 'auto')
+                service = form.getvalue('service', 'local')
+                api_key = form.getvalue('api_key', '')
+
+                logging.info(f"接收到本地文件上传: {file_item.filename} ({service})")
+
+                # 创建临时 URL（用于流程兼容）
+                # 注意：我们需要修改 process_video_task 以支持直接传入文件路径
+                update_task(task_id, 'pending', 0, '文件已上传，等待处理...')
+
+                # 直接处理本地文件
+                task_queue.put({
+                    'local_file': str(file_path),
+                    'task_id': task_id,
+                    'language': language,
+                    'service': service,
+                    'api_key': api_key
+                })
+
+                self._send_json({
+                    'task_id': task_id,
+                    'status': 'pending',
+                    'message': '文件已接收并加入处理队列'
+                })
+
+            except Exception as e:
+                logging.error(f"文件上传处理失败: {e}")
+                self._send_json({'error': f'文件上传失败: {str(e)}'}, 500)
 
         else:
             self._send_json({'error': 'Not Found'}, 404)

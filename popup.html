@@ -51,6 +51,20 @@
         <span class="btn-text">批量生成列表字幕</span>
       </button>
 
+      <!-- 本地文件拖拽识别 -->
+      <div class="drop-zone" id="dropZone">
+        <div class="drop-zone-content">
+          <span class="drop-icon">📁</span>
+          <p class="drop-text">拖拽音视频文件到此处</p>
+          <p class="drop-hint">或点击选择文件</p>
+          <input type="file" id="fileInput" accept="audio/*,video/*" style="display: none;">
+        </div>
+        <div class="file-info" id="fileInfo" style="display: none;">
+          <span id="fileName"></span>
+          <span id="fileSize"></span>
+        </div>
+      </div>
+
       <!-- 字幕控制（生成后显示） -->
       <div class="subtitle-controls" id="subtitleControls" style="display: none;">
         <div class="toggle-container">

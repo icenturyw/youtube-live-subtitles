@@ -23,9 +23,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     const fontSizeValue = document.getElementById('fontSizeValue');
     const positionSelect = document.getElementById('position');
 
+    // 拖拽区域元素
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileInfo = document.getElementById('fileInfo');
+    const fileName = document.getElementById('fileName');
+    const fileSize = document.getElementById('fileSize');
+
     let currentVideoId = null;
     let subtitlesVisible = true;
     let currentSubtitles = null;
+    let selectedFile = null;
 
     // 初始化
     await loadSettings();
@@ -137,6 +145,116 @@ document.addEventListener('DOMContentLoaded', async () => {
             batchBtn.querySelector('.btn-text').textContent = '批量生成列表字幕';
         }
     });
+
+    // 文件拖拽区域点击
+    dropZone.addEventListener('click', () => {
+        fileInput.click();
+    });
+
+    // 文件选择处理
+    fileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            handleFileSelect(file);
+        }
+    });
+
+    // 拖拽事件
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            dropZone.classList.add('drag-over');
+        });
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            dropZone.classList.remove('drag-over');
+        });
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleFileSelect(files[0]);
+        }
+    });
+
+    // 处理文件选择
+    function handleFileSelect(file) {
+        // 验证文件类型
+        const validTypes = ['audio/', 'video/'];
+        const isValid = validTypes.some(type => file.type.startsWith(type));
+
+        if (!isValid) {
+            showError('请选择音频或视频文件');
+            return;
+        }
+
+        selectedFile = file;
+        fileName.textContent = file.name;
+        fileSize.textContent = formatFileSize(file.size);
+        fileInfo.style.display = 'flex';
+
+        // 自动开始上传
+        uploadAndTranscribeFile();
+    }
+
+    // 格式化文件大小
+    function formatFileSize(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        else if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        else if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+        else return (bytes / 1073741824).toFixed(1) + ' GB';
+    }
+
+    // 上传并转录文件
+    async function uploadAndTranscribeFile() {
+        if (!selectedFile) return;
+
+        if (whisperServiceSelect.value === 'browser') {
+            showError('本地文件识别暂不支持浏览器内置服务');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('language', languageSelect.value);
+        formData.append('service', whisperServiceSelect.value);
+        if (apiKeyInput.value) {
+            formData.append('api_key', apiKeyInput.value);
+        }
+
+        showProcessing('正在上传文件...', 0);
+
+        try {
+            const response = await fetch('http://127.0.0.1:8765/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await response.json();
+
+            if (data.error) {
+                showError(data.error);
+                return;
+            }
+
+            const taskId = data.task_id;
+            pollTaskStatus(taskId);
+
+        } catch (e) {
+            showError('连接本地服务失败: ' + e.message);
+        }
+    }
 
     // 字幕开关变更
     subtitleToggle.addEventListener('change', async () => {
