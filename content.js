@@ -238,23 +238,24 @@
         if (!subtitleContainer) return;
 
         const positionStyles = settings.position === 'top'
-            ? 'top: 60px; bottom: auto;'
-            : 'bottom: 80px; top: auto;';
+            ? 'top: 60px !important; bottom: auto !important;'
+            : 'bottom: 80px !important; top: auto !important;';
 
         subtitleContainer.style.cssText = `
-      position: absolute;
-      left: 50%;
-      transform: translateX(-50%);
-      ${positionStyles}
-      z-index: 9999;
-      max-width: 90%;
-      text-align: center;
-      pointer-events: none;
-      transition: opacity 0.2s ease;
-      opacity: ${isVisible ? 1 : 0};
-    `;
+            position: absolute !important;
+            left: 50% !important;
+            transform: translateX(-50%) !important;
+            ${positionStyles}
+            z-index: 999999 !important;
+            max-width: 90% !important;
+            text-align: center !important;
+            pointer-events: none !important;
+            transition: opacity 0.2s ease !important;
+            opacity: ${isVisible ? 1 : 0} !important;
+            display: block !important;
+        `;
 
-        const textElement = document.getElementById('yt-custom-subtitle-text');
+        const textElement = subtitleContainer.querySelector('#yt-custom-subtitle-text');
         if (textElement) {
             // 参数解析，确保单位正确
             const fSize = String(settings.fontSize).endsWith('px') ? settings.fontSize : settings.fontSize + 'px';
@@ -267,25 +268,28 @@
                 ? `rgba(${bgRgb.r}, ${bgRgb.g}, ${bgRgb.b}, ${opacity})`
                 : `rgba(0, 0, 0, ${opacity})`;
 
-            textElement.style.cssText = `
-        display: inline-block;
-        padding: 10px 20px;
-        background: ${bgColor};
-        color: ${settings.color};
-        font-size: ${fSize};
-        font-family: ${settings.fontFamily};
-        border-radius: 8px;
-        text-shadow: ${sWidth} ${sWidth} ${sWidth} ${settings.strokeColor},
-                     -${sWidth} ${sWidth} ${sWidth} ${settings.strokeColor},
-                     ${sWidth} -${sWidth} ${sWidth} ${settings.strokeColor},
-                     -${sWidth} -${sWidth} ${sWidth} ${settings.strokeColor};
-        line-height: 1.5;
-        max-width: 100%;
-        word-wrap: break-word;
-        backdrop-filter: blur(4px);
-        -webkit-backdrop-filter: blur(4px);
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
-      `;
+            const css = `
+                display: inline-block !important;
+                padding: 10px 20px !important;
+                background: ${bgColor} !important;
+                color: ${settings.color} !important;
+                font-size: ${fSize} !important;
+                font-family: ${settings.fontFamily} !important;
+                border-radius: 8px !important;
+                text-shadow: ${sWidth} ${sWidth} ${sWidth} ${settings.strokeColor},
+                             -${sWidth} ${sWidth} ${sWidth} ${settings.strokeColor},
+                             ${sWidth} -${sWidth} ${sWidth} ${settings.strokeColor},
+                             -${sWidth} -${sWidth} ${sWidth} ${settings.strokeColor} !important;
+                line-height: 1.5 !important;
+                max-width: 100% !important;
+                word-wrap: break-word !important;
+                backdrop-filter: blur(4px) !important;
+                -webkit-backdrop-filter: blur(4px) !important;
+                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4) !important;
+                visibility: visible !important;
+            `;
+            console.log('应用字幕样式:', css);
+            textElement.style.cssText = css;
         }
     }
 
@@ -295,10 +299,10 @@
             else return;
         }
 
-        const textElement = document.getElementById('yt-custom-subtitle-text');
+        const textElement = subtitleContainer.querySelector('#yt-custom-subtitle-text');
         if (textElement) {
             textElement.textContent = text;
-            textElement.style.display = text ? 'inline-block' : 'none';
+            textElement.style.setProperty('display', text ? 'inline-block' : 'none', 'important');
         }
     }
 
@@ -329,7 +333,6 @@
         if (!result.ok) {
             throw new Error(result.data?.detail || '请求失败');
         }
-
 
         return result.data;
     }
@@ -570,15 +573,17 @@
             case 'toggleSubtitles':
                 isVisible = message.visible;
                 if (subtitleContainer) {
-                    subtitleContainer.style.opacity = isVisible ? 1 : 0;
+                    subtitleContainer.style.setProperty('opacity', isVisible ? '1' : '0', 'important');
                 }
                 sendResponse({ success: true });
                 break;
 
             case 'updateStyle':
+                console.log('收到样式更新消息:', message.style);
                 // 合并新样式设置
                 if (message.style) {
                     settings = { ...settings, ...message.style };
+                    console.log('合并后的设置:', settings);
                     updateSubtitleStyle();
                 }
                 sendResponse({ success: true });
