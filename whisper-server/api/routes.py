@@ -29,6 +29,23 @@ async def get_task_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
+@router.get("/status/{video_id}")
+async def get_video_status(video_id: str):
+    # This matches the old API's behavior of checking for cached/completed subtitles for a video_id
+    # We check if a completed task exists for this video_id in the manager or cache
+    # For now, we'll delegate to task_manager to look up by video_id
+    task = task_manager.get_task_by_video_id(video_id)
+    if not task:
+         raise HTTPException(status_code=404, detail="Status not found")
+    return task
+
+@router.post("/upload")
+async def upload_file(file: bytes, auth: str = Depends(verify_api_key)):
+    # File upload logic
+    task_id = str(uuid.uuid4())
+    task_manager.add_upload_task(task_id, file)
+    return {"task_id": task_id}
+
 @router.get("/health")
 async def health():
     return {"status": "ok"}

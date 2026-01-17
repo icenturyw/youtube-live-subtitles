@@ -34,9 +34,47 @@ class TaskManager:
     def get_task(self, task_id):
         return self.tasks.get(task_id)
 
+    def get_task_by_video_id(self, video_id):
+        # 1. Search in active tasks
+        for task in self.tasks.values():
+            if task.get('video_id') == video_id and task.get('status') == 'completed':
+                return task
+        
+        # 2. Check cache/db
+        cached = self._get_cached_subtitles(video_id)
+        if cached:
+            return {
+                'task_id': f"cached_{video_id}",
+                'status': 'completed',
+                'progress': 100,
+                'message': '从缓存加载',
+                'subtitles': cached.get('subtitles'),
+                'detected_language': cached.get('language'),
+                'updated_at': time.time()
+            }
+        return None
+
     def add_task(self, task_data):
         self.task_queue.put(task_data)
         self.update_task(task_data['task_id'], 'pending', 0, '等待队列处理...')
+        # Store video_id for lookup
+        if 'video_url' in task_data:
+            from core.utils import get_video_id
+            self.tasks[task_data['task_id']]['video_id'] = get_video_id(task_data['video_url'])
+
+    def add_upload_task(self, task_id, file_content):
+        # For simplicity in this fix, we'll save it to temp and add to queue
+        temp_file = TEMP_DIR / f"upload_{task_id}.mp3"
+        with open(temp_file, "wb") as f:
+            f.write(file_content)
+        
+        task_data = {
+            'task_id': task_id,
+            'local_file': str(temp_file),
+            'service': 'local' # Default to local for uploads
+        }
+        self.task_queue.put(task_data)
+        self.update_task(task_id, 'pending', 0, '文件已上传，等待处理...')
 
     def _worker(self):
         logging.info("TaskManager Worker 启动")
