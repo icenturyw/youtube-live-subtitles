@@ -97,9 +97,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        // 仅支持本地服务
-        if (whisperServiceSelect.value !== 'local') {
-            showError('批量生成功能仅支持本地 Whisper 服务');
+        if (whisperServiceSelect.value === 'browser') {
+            showError('批量生成功能暂不支持浏览器内置服务');
             return;
         }
 
@@ -112,7 +111,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     playlist_url: `https://www.youtube.com/playlist?list=${playlistId}`,
-                    language: languageSelect.value
+                    language: languageSelect.value,
+                    service: whisperServiceSelect.value,
+                    api_key: apiKeyInput.value
                 })
             });
 

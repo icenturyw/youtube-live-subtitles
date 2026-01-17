@@ -691,20 +691,22 @@ class RequestHandler(BaseHTTPRequestHandler):
         elif self.path == '/transcribe_playlist':
             playlist_url = data.get('playlist_url')
             language = data.get('language')
+            service = data.get('service', 'local')
+            api_key = data.get('api_key')
             
             if not playlist_url:
                 self._send_json({'error': '缺少 playlist_url'}, 400)
                 return
             
             # 异步解析列表，避免阻塞 HTTP 响应
-            def process_playlist_background():
+            def process_playlist_background(svc, key):
                 videos = fetch_playlist_videos(playlist_url)
                 added_count = 0
                 for v in videos:
                     vid = v['id']
                     v_url = v['url']
                     
-                    # 检查是否已有字幕（可选：如果已有就不加队列了，节省资源）
+                    # 检查是否已有字幕
                     if get_cached_subtitles(vid):
                         continue
                         
@@ -713,16 +715,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                     if task_id in tasks and tasks[task_id]['status'] in ['pending', 'downloading', 'transcribing']:
                         continue
                         
-                    update_task(task_id, 'pending', 0, '批量任务: 等待处理...')
+                    update_task(task_id, 'pending', 0, f'批量任务 ({svc.upper()}): 等待处理...')
                     task_queue.put({
                         'video_url': v_url,
                         'task_id': task_id,
-                        'language': language
+                        'language': language,
+                        'service': svc,
+                        'api_key': key
                     })
                     added_count += 1
-                logging.info(f"批量添加完成，新增 {added_count} 个任务")
+                logging.info(f"批量添加完成，新增 {added_count} 个任务 (服务: {svc})")
 
-            threading.Thread(target=process_playlist_background).start()
+            threading.Thread(target=process_playlist_background, args=(service, api_key)).start()
             
             self._send_json({
                 'status': 'success',
