@@ -611,7 +611,6 @@ class TaskManager:
             
             translated_subtitles.extend(batch)
         return translated_subtitles
-        return translated_subtitles
 
     def _correct_transcription(self, subtitles, src_lang):
         """
