@@ -175,8 +175,8 @@ def split_text_by_spacy(text, nlp, max_len=25, lang="zh"):
                  # Single segment is too long, force split (fallback to regex/length)
                  # Recursively call simple split if still too long
                  if len(s) > max_len:
-                     # Fallback to simple split for this chunk
-                     final_sentences.extend(split_text(s, max_len)) 
+                      # Fallback to robust simple split for this chunk (Non-recursive)
+                      final_sentences.extend(robust_split_by_length(s, max_len, lang)) 
                  else:
                      final_sentences.append(s)
         else:

@@ -202,7 +202,7 @@ class TaskManager:
         if target_lang and subtitles:
             self.update_task(task_id, 'transcribing', 90, f'正在翻译为 {target_lang}...')
             trans_start = time.time()
-            subtitles = self._translate_subtitles(subtitles, target_lang, api_key, service if service != 'local' else 'groq', src_lang=detected_lang, task_id=task_id)
+            subtitles = self._translate_subtitles(subtitles, target_lang, api_key, service if service != 'local' else 'groq', src_lang=detected_lang, task_id=task_id, llm_correction=llm_correction_enabled)
             logging.info(f"[{task_id}] 翻译完成, 耗时: {time.time() - trans_start:.2f}s")
 
         # [MODIFIED] 不再自动删除音频文件，以便复用
@@ -273,32 +273,44 @@ class TaskManager:
 
     def delete_video_cache(self, video_id):
         """
-        删除指定视频的所有缓存数据（本地文件、内存、MongoDB）
+        删除指定视频的所有缓存数据（本地文件、内存、MongoDB/Supabase）
+        保留下载的音频文件以供重试时复用
         """
         deleted_items = []
         
-        # 1. 删除本地 JSON 缓存文件
+        # 1. 删除本地最终 JSON 缓存文件
         cache_file = CACHE_DIR / f"{video_id}.json"
         if cache_file.exists():
             try:
                 cache_file.unlink()
-                deleted_items.append('local_cache')
-                logging.info(f"已删除本地缓存文件: {cache_file}")
+                deleted_items.append('final_cache')
+                logging.info(f"已删除本地最终缓存文件: {cache_file}")
             except Exception as e:
-                logging.error(f"删除本地缓存文件失败: {e}")
+                logging.error(f"删除本地最终缓存文件失败: {e}")
+
+        # 2. 删除本地原始识别 JSON 缓存文件 (RAW)
+        raw_cache_file = RAW_CACHE_DIR / f"{video_id}.json"
+        if raw_cache_file.exists():
+            try:
+                raw_cache_file.unlink()
+                deleted_items.append('raw_cache')
+                logging.info(f"已删除本地原始缓存文件: {raw_cache_file}")
+            except Exception as e:
+                logging.error(f"删除本地原始缓存文件失败: {e}")
         
-        # 2. 从内存中删除任务记录
+        # 3. 从内存中删除任务记录
         if video_id in self.tasks:
             del self.tasks[video_id]
             deleted_items.append('memory_task')
             logging.info(f"已从内存中删除任务: {video_id}")
         
-        # 3. 从 Supabase 中删除记录
+        # 4. 从 Supabase 中删除记录
         if supabase_db.client:
             try:
+                # 假设表名是 subtitles
                 response = supabase_db.client.table("subtitles").delete().eq("video_id", video_id).execute()
                 if response.data:
-                    deleted_items.append('supabase')
+                    deleted_items.append('supabase_record')
                     logging.info(f"已从 Supabase 删除记录: {video_id}")
             except Exception as e:
                 logging.error(f"从 Supabase 删除记录失败: {e}")
@@ -306,7 +318,8 @@ class TaskManager:
         return {
             'video_id': video_id,
             'deleted_items': deleted_items,
-            'success': len(deleted_items) > 0
+            'success': len(deleted_items) > 0,
+            'preserving': 'audio_file'
         }
 
     def _download_audio(self, video_url, task_id):
@@ -360,40 +373,48 @@ class TaskManager:
             else:
                 # 有拆分且有单词时间戳，尝试更精准的对齐
                 words = segment.words # List of Word objects (start, end, word)
-                full_text_cleaned = "".join([w.word.strip() for w in words])
-                
                 word_idx = 0
+                last_end = segment.start
+                
                 for part in parts:
-                    part_cleaned = part.replace(" ", "")
+                    part_cleaned = part.replace(" ", "").lower()
                     if not part_cleaned: continue
                     
                     part_start = None
-                    part_end = segment.start
-                    
                     current_part_content = ""
-                    while word_idx < len(words) and len(current_part_content) < len(part_cleaned):
+                    
+                    # 寻找匹配当前 part 的单词
+                    while word_idx < len(words):
                         w = words[word_idx]
-                        w_clean = w.word.strip()
+                        w_clean = w.word.strip().lower()
                         if not w_clean: 
                             word_idx += 1
                             continue
                             
                         if part_start is None:
-                            part_start = w.start
+                            part_start = max(w.start, last_end)
                         
-                        part_end = w.end
                         current_part_content += w_clean
+                        last_end = w.end
                         word_idx += 1
+                        
+                        # 如果匹配内容长度接近或超过 part_cleaned，停止当前 part 的单词收集
+                        if len(current_part_content) >= len(part_cleaned):
+                            break
                     
+                    # 确保 start < end 且不为 0 (除非确实在开头)
+                    # 如果没找到匹配的单词，则 fallback 到 segment 的时间比例
+                    s_time = round(part_start if part_start is not None else last_end, 2)
+                    e_time = round(last_end, 2)
+                    
+                    if e_time <= s_time:
+                         e_time = s_time + 0.1 # 最小持续时间
+
                     subtitles.append({
-                        'start': round(part_start if part_start is not None else segment.start, 2),
-                        'end': round(part_end, 2),
+                        'start': s_time,
+                        'end': e_time,
                         'text': part
                     })
-                
-                # 补查：如果还有剩余的 words 没分完，合并到最后一个段落
-                if word_idx < len(words) and subtitles:
-                    subtitles[-1]['end'] = round(words[-1].end, 2)
         return subtitles, info.language
 
     def _transcribe_via_api(self, audio_path, task_id, language, api_key, service, initial_prompt=None):
@@ -511,9 +532,19 @@ class TaskManager:
             logging.error(f"[{task_id}] LLM Request failed: {e}")
             return None
 
-    def _translate_subtitles(self, subtitles, target_lang, api_key, service='groq', src_lang='auto', task_id=None):
+    def _translate_subtitles(self, subtitles, target_lang, api_key, service='groq', src_lang='auto', task_id=None, llm_correction=False):
         if not subtitles or not target_lang:
             return subtitles
+
+        if src_lang == target_lang:
+            lm_studio_url = os.environ.get('LM_STUDIO_API_URL')
+            # 如果同语言：
+            # 1. 如果纠错关闭 -> 跳过
+            # 2. 如果纠错开启且 LM Studio 已经处理过 -> 跳过
+            # 3. 否则（开启纠错但没用 LM Studio）-> 继续（利用翻译流水线作为 fallback 纠错）
+            if not llm_correction or lm_studio_url:
+                logging.info(f"[{task_id}] Source language ({src_lang}) matches target, skipping translation (Correction: {llm_correction}, LM Studio: {'Yes' if lm_studio_url else 'No'}).")
+                return subtitles
 
         # Prepare LLM config
         lm_studio_url = os.environ.get('LM_STUDIO_API_URL')
