@@ -501,7 +501,16 @@
             }
 
             if (sub.translation) {
-                textElement.innerHTML = `<div class="yt-sub-original">${sub.text}</div><div class="yt-sub-translation">${sub.translation}</div>`;
+                // 如果译文和原文相同（例如已经是中文了），则只显示一个，避免重复
+                if (sub.text.trim() === sub.translation.trim()) {
+                    textElement.textContent = sub.text;
+                } else {
+                    // 双语显示：原文在上，译文在下
+                    textElement.innerHTML = `
+                        <div class="yt-sub-original" style="font-size: 0.85em; opacity: 0.9; margin-bottom: 4px;">${sub.text}</div>
+                        <div class="yt-sub-translation" style="font-weight: bold;">${sub.translation}</div>
+                    `;
+                }
             } else {
                 textElement.textContent = sub.text;
             }
