@@ -101,11 +101,17 @@ class TaskManager:
         logging.info("TaskManager Worker 启动")
         while True:
             task = self.task_queue.get()
+            start_time = time.time()
+            task_id = task.get('task_id')
             try:
+                logging.info(f"[{task_id}] 开始处理任务")
                 self._process_task(task)
+                duration = time.time() - start_time
+                logging.info(f"[{task_id}] 任务处理成功, 总耗时: {duration:.2f}s")
             except Exception as e:
-                logging.error(f"Task processing error: {e}")
-                self.update_task(task['task_id'], 'error', 0, str(e))
+                duration = time.time() - start_time
+                logging.error(f"[{task_id}] 任务处理失败 (耗时: {duration:.2f}s): {e}", exc_info=True)
+                self.update_task(task_id, 'error', 0, f"处理失败: {str(e)}")
             finally:
                 self.task_queue.task_done()
 
@@ -187,7 +193,9 @@ class TaskManager:
 
         if target_lang and subtitles:
             self.update_task(task_id, 'transcribing', 90, f'正在翻译为 {target_lang}...')
+            trans_start = time.time()
             subtitles = self._translate_subtitles(subtitles, target_lang, api_key, service if service != 'local' else 'groq', src_lang=detected_lang)
+            logging.info(f"[{task_id}] 翻译完成, 耗时: {time.time() - trans_start:.2f}s")
 
         # Cleanup audio
         # [MODIFIED] 不再自动删除音频文件，以便复用
@@ -281,14 +289,26 @@ class TaskManager:
         
         # Check if file already exists
         if os.path.exists(output) and os.path.getsize(output) > 0:
-            logging.info(f"音频文件已存在，跳过下载: {output}")
+            logging.info(f"[{task_id}] 音频文件已存在，跳过下载: {output}")
             self.update_task(task_id, 'downloading', 100, '音频已存在，直接使用...')
             return output
 
+        start_time = time.time()
         # 增加 --no-playlist 确保只下载单个视频，防止下载整个列表导致识别错乱
         cmd = ['yt-dlp', '--no-playlist', '-x', '--audio-format', 'mp3', '--audio-quality', '128K', '-o', output, video_url]
-        subprocess.run(cmd, check=True, capture_output=True)
-        return output
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                subprocess.run(cmd, check=True, capture_output=True)
+                logging.info(f"[{task_id}] 音频下载完成, 耗时: {time.time() - start_time:.2f}s")
+                return output
+            except subprocess.CalledProcessError as e:
+                if attempt < max_retries - 1:
+                    logging.warning(f"[{task_id}] 下载失败, 正在重试 ({attempt + 1}/{max_retries}): {e.stderr.decode() if e.stderr else str(e)}")
+                    time.sleep(2 * (attempt + 1))
+                else:
+                    raise Exception(f"音频下载最终失败: {e.stderr.decode() if e.stderr else str(e)}")
 
     def _transcribe_locally(self, audio_path, task_id, language, initial_prompt=None):
         self.update_task(task_id, 'transcribing', 50, '正在本地识别...')
@@ -373,14 +393,28 @@ class TaskManager:
                 data["prompt"] = initial_prompt
 
             with httpx.Client() as client:
-                response = client.post(url, headers=headers, data=data, files=files, timeout=300)
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        response = client.post(url, headers=headers, data=data, files=files, timeout=300)
+                        if response.status_code == 200:
+                            break
+                        elif attempt < max_retries - 1:
+                            logging.warning(f"[{task_id}] {service.upper()} 接口返回错误 {response.status_code}, 正在重试...")
+                            time.sleep(2 * (attempt + 1))
+                        else:
+                            raise Exception(f"API 最终返回错误: {response.text}")
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            logging.warning(f"[{task_id}] {service.upper()} 接口调用异常, 正在重试: {e}")
+                            time.sleep(2 * (attempt + 1))
+                        else:
+                            raise e
+
                 files["file"][1].close()
                 
                 if audio_path != original_path and os.path.exists(audio_path):
                     os.remove(audio_path)
-                
-                if response.status_code != 200:
-                    raise Exception(f"API 错误: {response.text}")
                 
                 result = response.json()
                 raw_segments = result.get('segments', [])

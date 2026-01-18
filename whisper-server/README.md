@@ -4,11 +4,12 @@
 
 ## 功能特点
 
-- 🎯 **高精度识别** - 使用 OpenAI Whisper 模型
-- 🌍 **多语言支持** - 自动检测或指定语言
-- 💾 **字幕缓存** - 同一视频无需重复识别
-- ⚡ **异步处理** - 后台任务，实时进度
-- 📡 **SSE 流式更新** - 实时推送进度
+- 🎯 **高精度识别** - 使用 OpenAI Whisper / SenseVoice 模型
+- 🌍 **多语言支持** - 自动检测或指定语言，支持多种专业领域 Prompt
+- 💾 **多级缓存** - 支持本地 JSON 缓存与 Supabase 云端同步
+- ⚡ **异步处理** - 基于队列的后台任务系统，支持播放列表批量转录
+- 📡 **实时性能监控** - 详细的步骤耗时日志，任务状态全程追踪
+- 🛡️ **健壮性增强** - 自动错误重试机制（下载、API 调用），确保任务完成率
 
 ## 系统要求
 
@@ -75,19 +76,31 @@ Content-Type: application/json
 }
 ```
 
-### 查询状态
+### 获取状态/结果
 ```
-GET /status/{task_id}
-```
-
-### SSE 实时状态
-```
-GET /stream/{task_id}
+GET /task/{task_id}
 ```
 
-### 获取缓存
+### 获取视频缓存
 ```
-GET /cache/{video_id}
+GET /status/{video_id}
+```
+
+### 播放列表转录
+```
+POST /transcribe_playlist
+Content-Type: application/json
+
+{
+  "playlist_url": "https://www.youtube.com/playlist?list=xxxxx",
+  "service": "local",
+  "engine": "whisper"
+}
+```
+
+### 删除缓存
+```
+DELETE /cache/{video_id}
 ```
 
 ## Whisper 模型选择
