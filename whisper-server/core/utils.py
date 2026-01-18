@@ -22,11 +22,15 @@ try:
 except ImportError:
     HAS_SPACY = False
 
-CACHE_DIR = Path("./cache")
-CACHE_DIR.mkdir(exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent.parent
+CACHE_DIR = BASE_DIR / "cache"
+RAW_CACHE_DIR = CACHE_DIR / "raw"
+TEMP_DIR = BASE_DIR / "temp"
 
-TEMP_DIR = Path("./temp")
-TEMP_DIR.mkdir(exist_ok=True)
+# Ensure directories exist
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+RAW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
 NLP_MODELS = {}
 
@@ -61,7 +65,51 @@ def load_spacy_model(lang):
         logging.warning(f"Failed to load Spacy model {model_name}: {e}")
         return None
 
-def split_text_by_spacy(text, nlp, max_len=25):
+def robust_split_by_length(text, max_len, lang="zh"):
+    """
+    Split text by length while respecting word boundaries for English.
+    """
+    if len(text) <= max_len:
+        return [text]
+    
+    if lang == "en":
+        # Split by spaces if English
+        words = text.split(' ')
+        lines = []
+        current_line = ""
+        for word in words:
+            if not current_line:
+                current_line = word
+            elif len(current_line) + 1 + len(word) <= max_len:
+                current_line += " " + word
+            else:
+                lines.append(current_line)
+                current_line = word
+        if current_line:
+            lines.append(current_line)
+        
+        # If a single word is still longer than max_len (rare), force split it
+        result = []
+        for line in lines:
+            if len(line) > max_len:
+                # Force split long words
+                while len(line) > max_len:
+                    result.append(line[:max_len])
+                    line = line[max_len:]
+                if line: result.append(line)
+            else:
+                result.append(line)
+        return result
+    else:
+        # Chinese or other: simple split
+        result = []
+        while len(text) > max_len:
+            result.append(text[:max_len])
+            text = text[max_len:]
+        if text: result.append(text)
+        return result
+
+def split_text_by_spacy(text, nlp, max_len=25, lang="zh"):
     """
     Split text using Spacy dependency parsing (based on VideoLingo approach)
     """
@@ -147,80 +195,10 @@ def split_text(text, max_len=25, lang="zh"):
     if HAS_SPACY:
         nlp = load_spacy_model(lang)
         if nlp:
-            return split_text_by_spacy(text, nlp, max_len)
+            return split_text_by_spacy(text, nlp, max_len, lang)
 
-    # Fallback to Regex
-    if len(text) <= max_len:
-        return [text]
-    
-    connectors = ['但是', '所以', '因此', '然后', '而且', '并且', '或者', '不过', '但', '而', 
-                  'but', 'so', 'therefore', 'then', 'and', 'or', 'however', 'yet']
-    sentence_endings = r'([。！？；.!?;])'
-    minor_punctuations = r'([，,、])'
-    
-    sentences = re.split(sentence_endings, text)
-    result = []
-    current = ""
-    
-    i = 0
-    while i < len(sentences):
-        part = sentences[i]
-        if i + 1 < len(sentences) and re.match(sentence_endings, sentences[i + 1]):
-            part += sentences[i + 1]
-            i += 2
-        else:
-            i += 1
-        
-        if len(part) > max_len:
-            sub_parts = re.split(minor_punctuations, part)
-            sub_current = ""
-            j = 0
-            while j < len(sub_parts):
-                sub_part = sub_parts[j]
-                if j + 1 < len(sub_parts) and re.match(minor_punctuations, sub_parts[j + 1]):
-                    sub_part += sub_parts[j + 1]
-                    j += 2
-                else:
-                    j += 1
-                
-                can_split_at_connector = False
-                for conn in connectors:
-                    if sub_part.strip().startswith(conn):
-                        can_split_at_connector = True
-                        break
-                
-                if len(sub_current) + len(sub_part) > max_len and sub_current:
-                    result.append(sub_current.strip())
-                    sub_current = sub_part
-                elif can_split_at_connector and sub_current and len(sub_current) > max_len * 0.5:
-                    result.append(sub_current.strip())
-                    sub_current = sub_part
-                else:
-                    sub_current += sub_part
-            
-            if sub_current:
-                if len(sub_current) > max_len:
-                    while len(sub_current) > max_len:
-                        result.append(sub_current[:max_len].strip())
-                        sub_current = sub_current[max_len:]
-                if sub_current.strip():
-                    current = sub_current
-        else:
-            if len(current) + len(part) > max_len and current:
-                result.append(current.strip())
-                current = part
-            else:
-                current += part
-    
-    if current:
-        if len(current) > max_len:
-            while len(current) > max_len:
-                result.append(current[:max_len].strip())
-                current = current[max_len:]
-        if current.strip():
-            result.append(current.strip())
-    
-    return [r for r in result if r] or [text]
+    # Robust word-aware fallback
+    return robust_split_by_length(text, max_len, lang)
 
 def compress_audio(audio_path):
     MAX_SIZE = 24 * 1024 * 1024
