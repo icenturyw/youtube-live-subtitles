@@ -56,14 +56,14 @@ except ImportError:
 
 # ============ 配置 ============
 PORT = 8765
-MODEL_SIZE = "tiny"  # 可选: tiny, base, small, medium, large-v3
-DEVICE = "cpu"       # 如果有 NVIDIA 显卡并安装了 CUDA，可改为 "cuda"
-COMPUTE_TYPE = "int8" # cpu 推荐 int8, gpu 推荐 float16
-CPU_THREADS = 8      # 线程数，0 为自动。如果 CPU 使用率低，可以尝试设为 4, 8 或 16
+MODEL_SIZE = "large-v3-turbo"  # 可选: tiny, base, small, medium, large-v3
+DEVICE = "cuda"       # 如果有 NVIDIA 显卡并安装了 CUDA，可改为 "cuda"
+COMPUTE_TYPE = "float16" # cpu 推荐 int8, gpu 推荐 float16
+CPU_THREADS = 0      # 线程数，0 为自动。如果 CPU 使用率低，可以尝试设为 4, 8 或 16
 NUM_WORKERS = 4      # 模型内部工作进程数
 
 # 任务队列配置
-MAX_CONCURRENT_TASKS = 1 # 同时进行的转录任务数 (建议为1，以免显存爆炸)
+MAX_CONCURRENT_TASKS = 2 # 同时进行的转录任务数 (建议为1，以免显存爆炸)
 task_queue = queue.Queue()
 
 # MongoDB 配置 (从环境变量读取，更安全)
@@ -74,6 +74,15 @@ MONGO_COLLECTION_NAME = os.environ.get('MONGO_COLLECTION_NAME', 'videos')
 # API Keys (可选，支持 Groq 和 OpenAI)
 GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+
+# Proxy 配置
+HTTP_PROXY = os.environ.get('HTTP_PROXY', '')
+HTTPS_PROXY = os.environ.get('HTTPS_PROXY', '')
+
+if HTTP_PROXY:
+    os.environ['http_proxy'] = HTTP_PROXY
+if HTTPS_PROXY:
+    os.environ['https_proxy'] = HTTPS_PROXY
 
 CACHE_DIR = Path("./cache")
 CACHE_DIR.mkdir(exist_ok=True)
@@ -178,7 +187,7 @@ def save_subtitles_cache(video_id, subtitles, language):
     else:
         logging.info(f"MongoDB 未连接，字幕仅保存至本地缓存")
 
-def update_task(task_id, status, progress, message, subtitles=None, language=None):
+def update_task(task_id, status, progress, message, subtitles=None, language=None, service=None):
     tasks[task_id] = {
         'task_id': task_id,
         'status': status,
@@ -186,6 +195,7 @@ def update_task(task_id, status, progress, message, subtitles=None, language=Non
         'message': message,
         'subtitles': subtitles,
         'detected_language': language,
+        'service': service or (tasks[task_id].get('service') if task_id in tasks else 'local'),
         'updated_at': time.time()
     }
 
@@ -211,30 +221,51 @@ def get_model():
 def download_audio(video_url, task_id):
     update_task(task_id, 'downloading', 10, '正在下载音频...')
     video_id = get_video_id(video_url)
-    output_template = str(TEMP_DIR / f"{video_id}.%(ext)s")
+    
+    # 优先检查是否已存在对应音频，避免重复下载
+    for file in TEMP_DIR.glob(f"{video_id}.*"):
+        if file.suffix in ['.mp3', '.m4a', '.webm', '.opus']:
+            update_task(task_id, 'downloading', 30, '音频文件已存在，跳过下载...')
+            logging.info(f"音频文件已存在: {file.name}, 跳过下载。")
+            return str(file)
+
+    output_template = str(TEMP_DIR / f"{video_id}.%(ext)s").replace('\\', '/')
     
     cmd = [
         'yt-dlp',
         '-x', '--audio-format', 'mp3',
         '--audio-quality', '128K',
-        '--no-part',  # 直接写入文件，避免重命名时的 WinError 32 占用错误
-        '--force-overwrites', # 强制覆盖旧文件
+        '--no-part',
+        '--force-overwrites',
+        '--no-cache-dir', # 避免缓存导致的 403 或其他错误
         '-o', output_template,
         '--no-playlist',
+        '--proxy', HTTP_PROXY if HTTP_PROXY else '', # 显式传递代理
         video_url
     ]
+    # 移除空代理参数
+    if not HTTP_PROXY:
+        cmd.remove('')
+        cmd.remove('--proxy')
     
     try:
-        # 增加超时时间到 10 分钟
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if result.returncode != 0:
-            raise Exception(f"下载失败: {result.stderr}")
+        logging.info(f"执行下载命令: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, encoding='utf-8', errors='ignore')
         
+        if result.returncode != 0:
+            stderr_msg = result.stderr.strip() if result.stderr else "未知错误 (stderr 为空)"
+            logging.error(f"yt-dlp 失败: {stderr_msg}")
+            # 如果是因为地理限制或需要登录，提醒用户
+            if "Sign in to confirm" in stderr_msg or "confirm your age" in stderr_msg:
+                raise Exception("YouTube 要求登录或验证年龄，请在服务器上配置 Cookie 或使用本地文件上传。")
+            raise Exception(f"下载失败 (Code {result.returncode}): {stderr_msg[:200]}...")
+        
+        # 再次检查文件是否存在 (考虑到某些情况下扩展名可能不同)
         for file in TEMP_DIR.glob(f"{video_id}.*"):
             if file.suffix in ['.mp3', '.m4a', '.webm', '.opus']:
                 update_task(task_id, 'downloading', 40, '音频下载完成，准备识别...')
                 return str(file)
-        raise Exception("音频文件未找到")
+        raise Exception("下载完成但未找到音频文件")
     except subprocess.TimeoutExpired:
         raise Exception("音频下载超时 (超过 10 分钟)")
     except Exception as e:
@@ -388,7 +419,7 @@ def transcribe_locally(audio_path, task_id, language):
         language=None if not language or language == 'auto' else language,
         beam_size=1,
         vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=500),
+        vad_parameters=dict(min_silence_duration_ms=1000),
         initial_prompt="以下是普通话的句子，请用简体中文。以下是普通話的句子，請用簡體中文。" 
     )
     
@@ -408,22 +439,38 @@ def transcribe_locally(audio_path, task_id, language):
         if len(text) > 25:
             split_parts = split_text(text)
             duration = segment.end - segment.start
-            part_duration = duration / len(split_parts)
+            
+            # 改进：按字符长度比例分配时长，而不是简单均分
+            total_chars = sum(len(p) for p in split_parts)
+            current_start = segment.start
             
             for i, part in enumerate(split_parts):
+                part_len = len(part)
+                part_duration = (part_len / total_chars) * duration
+                part_end = current_start + part_duration
+                
                 subtitles.append({
-                    'start': round(segment.start + i * part_duration, 2),
-                    'end': round(segment.start + (i + 1) * part_duration, 2),
+                    'start': round(current_start, 2),
+                    'end': round(part_end + 0.1, 2), # 增加 0.1s 冗余，防止字幕闪现过快
                     'text': part
                 })
+                current_start = part_end
         else:
             subtitles.append({
                 'start': round(segment.start, 2),
-                'end': round(segment.end, 2),
+                'end': round(segment.end + 0.1, 2), # 增加 0.1s 冗余
                 'text': text
             })
             
-        if len(subtitles) % 10 == 0:
+        # 更新进度：基于识别到的时间点占总时长的比例
+        total_duration = info.duration
+        if total_duration > 0:
+            current_time = segment.end
+            # 识别进度占据 50%-98% 的区间
+            progress = min(98, 50 + int((current_time / total_duration) * 48))
+            if int(progress) % 2 == 0: # 减少更新频率，避免过度占用 CPU
+                update_task(task_id, 'transcribing', int(progress), f'正在识别: {int(current_time)}s / {int(total_duration)}s ({int(progress)}%)...')
+        elif len(subtitles) % 10 == 0:
              progress = min(98, 60 + (len(subtitles) / 10))
              update_task(task_id, 'transcribing', int(progress), f'已生成 {len(subtitles)} 条字幕...')
 
@@ -494,18 +541,26 @@ def transcribe_via_api(audio_path, task_id, language, api_key, service='groq'):
                 if len(text) > 25:
                     split_parts = split_text(text)
                     duration = seg['end'] - seg['start']
-                    part_duration = duration / len(split_parts)
+                    
+                    # 改进：按字符长度比例分配时长
+                    total_chars = sum(len(p) for p in split_parts)
+                    current_start = seg['start']
                     
                     for i, part in enumerate(split_parts):
+                        part_len = len(part)
+                        part_duration = (part_len / total_chars) * duration
+                        part_end = current_start + part_duration
+                        
                         subtitles.append({
-                            'start': round(seg['start'] + i * part_duration, 2),
-                            'end': round(seg['start'] + (i + 1) * part_duration, 2),
+                            'start': round(current_start, 2),
+                            'end': round(part_end + 0.1, 2),
                             'text': part
                         })
+                        current_start = part_end
                 else:
                     subtitles.append({
                         'start': round(seg['start'], 2),
-                        'end': round(seg['end'], 2),
+                        'end': round(seg['end'] + 0.1, 2),
                         'text': text
                     })
             
@@ -581,11 +636,12 @@ def process_video_task(video_url, task_id, language, api_key=None, service='loca
         
         # 完成
         update_task(task_id, 'completed', 100, f'完成！共 {len(subtitles)} 条',
-                   subtitles, lang)
+                   subtitles, lang, service=service)
         
         # 清理临时文件
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
+        # [MODIFIED] 根据用户要求，不再自动删除音频文件，以便复用
+        # if os.path.exists(audio_path):
+        #     os.remove(audio_path)
         
     except Exception as e:
         logging.error(f"任务 {task_id} 失败: {e}")
@@ -918,16 +974,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             # 使用简单的 task_id (video_id)，方便前端查询状态
             task_id = video_id 
             
-            # 如果任务已在队列或运行中，直接返回
-            if task_id in tasks and tasks[task_id]['status'] in ['pending', 'downloading', 'transcribing']:
-                 self._send_json({
-                    'task_id': task_id,
-                    'status': tasks[task_id]['status'],
-                    'message': '任务已在运行中'
-                })
-                 return
+            # 如果任务已在队列、运行中或已完成，检查是否可以直接返回
+            if task_id in tasks:
+                current_status = tasks[task_id]['status']
+                if current_status in ['pending', 'downloading', 'transcribing']:
+                    self._send_json({
+                        'task_id': task_id,
+                        'status': current_status,
+                        'message': '任务已在运行中'
+                    })
+                    return
+                elif current_status == 'completed' and service == tasks[task_id].get('service', 'local'):
+                    # 如果已经完成，且服务类型没变，直接返回完成结果
+                    self._send_json(tasks[task_id])
+                    return
 
-            update_task(task_id, 'pending', 0, '已加入队列，等待处理...')
+            update_task(task_id, 'pending', 0, '已加入队列，等待处理...', service=service)
             
             # 加入队列
             task_queue.put({

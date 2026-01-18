@@ -1,73 +1,53 @@
-# YouTube Live Subtitles (v2.0.0)
+# YouTube Live Subtitles (v2.2.0)
 
-本项目是一个为 YouTube 视频（尤其是直播和超长视频）生成实时/准实时字幕的工具。支持本地 Whisper 模型识别、外部极速 API（Groq/OpenAI）识别，并提供云端 MongoDB 同步功能。
+本项目是一个为 YouTube 视频（尤其是直播和超长视频）生成实时/准实时字幕的工具。支持本地 GPU 加速识别、LLM 智能纠错、多端 Supabase 云同步功能。
 
 ## ✨ 核心特性
 
-- **多模式识别**：支持本地 Faster-Whisper、Groq API、OpenAI API 及浏览器内置 API。
-- **现代化架构**：后端由 FastAPI 驱动，异步处理，性能卓越。
-- **VPS/Docker 友好**：支持一键 Docker 部署，插件可远程连接 VPS。
-- **智能长视频处理**：自动音频提取与动态压缩，突破 API 文件大小限制。
-- **语义化断句**：针对中文优化的语义分割算法， subtitle 阅读更流畅。
-- **云端同步**：适配 MongoDB，同一视频字幕在不同设备间瞬间同步。
-- **极简 UI**：漂亮的透明磨砂感字幕容器，支持字体、颜色、位置自定义。
+- **🚀 满血 GPU 加速**：深度适配 `faster-whisper`，支持 CUDA 12.x 自动检测，识别速度提升 5-10 倍。
+- **🧠 LLM 智能纠错**：支持接入本地 LM Studio，自动修正识别过程中的错别字、谐音词，提升字幕质量。
+- **☁️ Supabase 云同步**：摒弃不稳定的 MongoDB，改用 Supabase (Postgres) 实现极速多端字幕共享。
+- **🎨 增强型 UI**：全新的折叠面板设计，保持界面简洁；新增 LLM 纠错一键开关。
+- **语义化断句**：针对中文优化的语义分割算法，阅读逻辑更清晰。
+- **多模式识别**：支持本地 Whisper、SenseVoice、Groq API 及 OpenAI API。
 
-## 🔄 更新日志
+## 🔄 最新更新
 
-### v2.1.0 (2026-01-17) - 后端现代化与 VPS 支持 🚀
+### v2.2.0 (2026-01-18) - 存储进化与性能巅峰 ⚡
+- **云同步迁移**：全面支持 **Supabase**，解决 MongoDB 连接不稳问题（见 `db/supabase_db.py`）。
+- **硬件自适应**：智能检测 GPU/CPU 环境，自动切换 `float16` 精度和 `large-v3-turbo` 顶级模型。
+- **UI 交互优化**：设置项支持折叠，新增 LLM 纠错全局开关。
+- **批量处理增强**：修复播放列表批量转录接口，支持多任务并行排队。
 
-**新功能 (架构重构)**
-- **FastAPI 核心驱动**：后端从传统的 `http.server` 迁移至性能强劲的 `FastAPI` 异步框架（见 `whisper-server/main.py`）。
-- **模块化代码结构**：逻辑拆分为 `api/`, `core/`, `db/`, `models/` 等模块，提高可维护性。
-- **VPS 远程部署支持**：完善 Docker 支持，插件可配置任意远程服务器地址。
-- **安全鉴权系统**：新增 `API_AUTH_KEY` 验证机制，确保私有服务安全。
+## 🚀 快速启动
 
-**优化与修复**
-- **鉴权头注入**：浏览器扩展在与后端通信时会自动注入 `X-API-Key` 请求头。
-- **配置持久化**：扩展设置（服务器地址、鉴权 Key）现已支持同步到 Chrome 账号。
-- **代码整洁度**：重构转录逻辑，统一入口。
+### 识别服务 (后端)
+1. 进入 `whisper-server` 目录。
+2. 配置 `.env` 文件（参照示例填入 Supabase 密钥和 LM Studio 地址）。
+3. 运行 `start.bat`。
 
-## 🐳 Docker 部署指南 (VPS)
+### 浏览器插件 (前端)
+1. 在开发者模式下加载本项目根目录。
+2. 点击插件图标，配置您的服务器地址和连接密钥。
 
-如果您想在远程服务器上部署识别服务：
-
-1. **构建镜像**：
-   ```bash
-   cd whisper-server
-   docker build -t whisper-backend .
-   ```
-
-2. **运行容器**：
-   ```bash
-   docker run -d \
-     -p 8765:8765 \
-     --name whisper-server \
-     -e API_AUTH_KEY="your-custom-auth-key" \
-     -e MONGO_URI="your-mongodb-uri" \
-     whisper-backend
-   ```
-
-3. **插件配置**：
-   - 打开扩展设置，将 **服务器地址** 改为 `http://your-vps-ip:8765`。
-   - 在 **服务器鉴权 Key** 中填入您设置的 `API_AUTH_KEY`。
-
-## 🛠️ 环境要求
-
-- **Python 3.10+** / **Docker**
-- **FFmpeg** (用于音频预处理)
-
-## 🚀 安装与启动
-
-### 本地模式
-1. 进入 `whisper-server`。
-2. 运行 `start.bat`。
-
-### 开发者说明
-可以直接使用 uvicorn 启动：
-```bash
-uvicorn main:app --reload --port 8765
+## ⚠️ Supabase 初始化
+在使用云同步前，请在 Supabase SQL Editor 中运行以下脚本：
+```sql
+create table if not exists subtitles (
+  video_id text primary key,
+  language text,
+  service text,
+  domain text,
+  engine text,
+  subtitles jsonb,
+  created_at timestamptz default now()
+);
 ```
 
-## ⚖️ 许可证
+## 🛠️ 环境要求
+- **Python 3.10+** (建议 3.13)
+- **CUDA 12.x** (可选，用于 GPU 加速)
+- **FFmpeg**
 
+## ⚖️ 许可证
 MIT License

@@ -52,6 +52,6 @@ echo Press Ctrl+C to stop service
 echo ========================================
 echo.
 
-uvicorn main:app --host 0.0.0.0 --port 8765 --reload
+uvicorn main:app --host 0.0.0.0 --port 8765 --log-level info
 
 pause

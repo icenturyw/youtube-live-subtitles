@@ -2,3 +2,12 @@ faster-whisper
 pymongo
 dnspython
 httpx
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+python-jose[cryptography]
+passlib[bcrypt]
+opencc-python-reimplemented
+spacy
+supabase

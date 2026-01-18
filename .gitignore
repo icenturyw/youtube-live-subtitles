@@ -23,3 +23,5 @@ whisper-server/temp/
 # OS
 .DS_Store
 Thumbs.db
+
+VideoLingo_Reference/

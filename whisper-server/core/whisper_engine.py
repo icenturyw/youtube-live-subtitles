@@ -20,9 +20,12 @@ class WhisperEngine:
         if self._initialized:
             return
         
-        self.model_size = os.environ.get("MODEL_SIZE", "tiny")
-        self.device = os.environ.get("DEVICE", "cpu")
-        self.compute_type = os.environ.get("COMPUTE_TYPE", "int8")
+        import torch
+        self.model_size = os.environ.get("MODEL_SIZE", "base")
+        self.device = os.environ.get("DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+        # GPU 建议用 float16, CPU 建议用 int8
+        default_compute_type = "float16" if self.device == "cuda" else "int8"
+        self.compute_type = os.environ.get("COMPUTE_TYPE", default_compute_type)
         self.cpu_threads = int(os.environ.get("CPU_THREADS", "8"))
         self.num_workers = int(os.environ.get("NUM_WORKERS", "4"))
         self.model = None
@@ -32,7 +35,13 @@ class WhisperEngine:
         if self.model is None:
             with self._lock:
                 if self.model is None:
-                    logging.info(f"正在加载本地模型 ({self.model_size})...")
+                    print("\n" + "="*40)
+                    print(" [WHISPER ENGINE] 正在初始化模型...")
+                    print(f" > 模型大小: {self.model_size}")
+                    print(f" > 运行设备: {self.device}")
+                    print(f" > 计算类型: {self.compute_type}")
+                    print("="*40 + "\n")
+                    
                     self.model = WhisperModel(
                         self.model_size,
                         device=self.device,
@@ -40,7 +49,7 @@ class WhisperEngine:
                         cpu_threads=self.cpu_threads,
                         num_workers=self.num_workers
                     )
-                    logging.info("模型加载完成")
+                    print(" [WHISPER ENGINE] 模型加载成功！")
         return self.model
 
     def transcribe(self, audio_path, language=None, initial_prompt=None):
@@ -51,7 +60,8 @@ class WhisperEngine:
             beam_size=1,
             vad_filter=True,
             vad_parameters=dict(min_silence_duration_ms=500),
-            initial_prompt=initial_prompt or "以下是普通话的句子，请用简体中文。"
+            initial_prompt=initial_prompt or "以下是普通话的句子，请用简体中文。",
+            word_timestamps=True
         )
         return segments, info
 

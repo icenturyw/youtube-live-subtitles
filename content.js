@@ -6,11 +6,23 @@
     let WHISPER_SERVER = 'http://127.0.0.1:8765';
     let SERVER_AUTH_KEY = '';
 
+    // ============ 全局状态 ============
+    let isContextInvalidated = false;
+
     // 初始化配置
-    chrome.storage.local.get(['serverHost', 'authKey'], (result) => {
-        if (result.serverHost) WHISPER_SERVER = result.serverHost.replace(/\/$/, '');
-        if (result.authKey) SERVER_AUTH_KEY = result.authKey;
-    });
+    try {
+        chrome.storage.local.get(['serverHost', 'authKey'], (result) => {
+            if (chrome.runtime.lastError) {
+                console.warn('初始加载配置失败 (可能上下文已失效):', chrome.runtime.lastError.message);
+                isContextInvalidated = true;
+                return;
+            }
+            if (result.serverHost) WHISPER_SERVER = result.serverHost.replace(/\/$/, '');
+            if (result.authKey) SERVER_AUTH_KEY = result.authKey;
+        });
+    } catch (e) {
+        isContextInvalidated = true;
+    }
 
     // ============ 代理 fetch 函数 (绕过 PNA 限制) ============
     async function proxyFetch(url, options = {}) {
@@ -26,25 +38,42 @@
                 options.headers['X-API-Key'] = SERVER_AUTH_KEY;
             }
         }
+        if (isContextInvalidated) {
+            console.warn('上下文已失效，跳过请求:', url);
+            throw new Error('Extension context invalidated');
+        }
+
         try {
-            const result = await chrome.runtime.sendMessage({
-                type: 'proxyFetch',
-                url: url,
-                options: {
-                    method: options.method || 'GET',
-                    headers: options.headers,
-                    body: options.body
-                }
+            const result = await new Promise((resolve, reject) => {
+                chrome.runtime.sendMessage({
+                    type: 'proxyFetch',
+                    url: url,
+                    options: {
+                        method: options.method || 'GET',
+                        headers: options.headers,
+                        body: options.body
+                    }
+                }, response => {
+                    if (chrome.runtime.lastError) {
+                        isContextInvalidated = true;
+                        reject(new Error('Extension context invalidated'));
+                    } else {
+                        resolve(response);
+                    }
+                });
             });
+
             if (result.error) {
                 throw new Error(result.error);
             }
             return result;
         } catch (e) {
-            console.error('Proxy fetch 失败:', e);
             if (e.message.includes('Extension context invalidated')) {
-                console.warn('检测到扩展重载，正在自动刷新页面...');
-                window.location.reload();
+                isContextInvalidated = true;
+                console.warn('检测到扩展重载，正在停止后续任务...');
+                // 如果是在正在生成字幕的过程中重载的，可以考虑提示用户刷新
+            } else {
+                console.error('Proxy fetch 失败:', e);
             }
             throw e;
         }
@@ -196,7 +225,7 @@
             const mid = Math.floor((left + right) / 2);
             const sub = subtitles[mid];
 
-            if (time >= sub.start && time <= sub.end) {
+            if (time >= sub.start && time < sub.end + 0.2) { // 给予前端 0.2s 的显示冗余，防止断断续续
                 return mid;
             } else if (time < sub.start) {
                 right = mid - 1;
@@ -492,7 +521,7 @@
         }
     }
 
-    async function startWhisperTranscription(videoUrl, language, apiKey, service, targetLang) {
+    async function startWhisperTranscription(videoUrl, language, apiKey, service, targetLang, domain, engine, llmCorrection) {
         const result = await proxyFetch(`${WHISPER_SERVER}/transcribe`, {
             method: 'POST',
             headers: {
@@ -503,7 +532,10 @@
                 language: language === 'auto' ? 'auto' : language,
                 api_key: apiKey,
                 service: service || 'local',
-                target_lang: targetLang
+                target_lang: targetLang,
+                domain: domain || 'general',
+                engine: engine || 'whisper',
+                llm_correction: llmCorrection || false
             })
         });
 
@@ -523,6 +555,10 @@
         const maxAttempts = 3600;  // 最多等待 30 分钟 (1800 秒)
 
         for (let i = 0; i < maxAttempts; i++) {
+            if (isContextInvalidated) {
+                console.log('轮询终止: 扩展上下文已失效');
+                return;
+            }
             await sleep(500);
 
             try {
@@ -602,6 +638,13 @@
                 }
 
                 const videoUrl = window.location.href;
+                const videoId = new URLSearchParams(window.location.search).get('v');
+
+                // 准备重新生成时，先清除掉该视频的浏览器本地缓存
+                if (videoId) {
+                    await chrome.storage.local.remove(`subtitles_${videoId}`);
+                    console.log(`[Whisper] 已清除视频 ${videoId} 的本地缓存，准备重新生成...`);
+                }
 
                 sendProgress(5, '正在连接 Whisper 服务...');
 
@@ -611,7 +654,10 @@
                     genSettings.language,
                     genSettings.api_key,
                     service,
-                    genSettings.target_lang
+                    genSettings.target_lang,
+                    genSettings.domain,
+                    genSettings.engine || 'whisper',
+                    genSettings.llm_correction || false
                 );
                 currentTaskId = task.task_id;
 
@@ -665,15 +711,17 @@
         recognition.lang = getLanguageCode(language);
 
         const generatedSubtitles = [];
+        let recognitionActive = true; // 识别状态标志
         let startTime = 0;
 
         return new Promise((resolve, reject) => {
             recognition.onresult = (event) => {
+                const currentTime = videoElement.currentTime;
+
                 for (let i = event.resultIndex; i < event.results.length; i++) {
                     if (event.results[i].isFinal) {
                         const text = event.results[i][0].transcript.trim();
                         if (text) {
-                            const currentTime = videoElement.currentTime;
                             generatedSubtitles.push({
                                 start: startTime,
                                 end: currentTime,
@@ -689,17 +737,25 @@
             };
 
             recognition.onerror = (event) => {
-                if (event.error !== 'no-speech') {
+                // 忽略常见的非关键错误
+                if (event.error === 'no-speech' || event.error === 'aborted') {
+                    // 这些错误通常是正常的，不需要显示给用户
+                    console.log('语音识别事件:', event.error);
+                } else {
                     console.error('识别错误:', event.error);
                 }
             };
 
             recognition.onend = () => {
-                if (videoElement.currentTime < duration - 1) {
+                // 检查是否应该继续识别
+                if (recognitionActive && videoElement.currentTime < duration - 1) {
                     try {
                         recognition.start();
-                    } catch (e) { }
-                } else {
+                    } catch (e) {
+                        console.log('重启识别失败:', e.message);
+                    }
+                } else if (recognitionActive) {
+                    // 识别完成
                     subtitles = generatedSubtitles;
                     sendProgress(100, '字幕生成完成！');
                     sendSubtitlesReady(generatedSubtitles);
@@ -714,6 +770,7 @@
             }).catch(reject);
 
             const onEnded = () => {
+                recognitionActive = false; // 标记为不活跃
                 recognition.stop();
                 videoElement.removeEventListener('ended', onEnded);
                 subtitles = generatedSubtitles;

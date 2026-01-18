@@ -22,6 +22,9 @@ class TranscribeRequest(BaseModel):
     service: str = "local"
     api_key: Optional[str] = None
     target_lang: Optional[str] = None
+    domain: str = "general"
+    engine: str = "whisper" # 默认使用 whisper
+    llm_correction: bool = False  # LLM 纠错开关
 
 class PlaylistRequest(BaseModel):
     playlist_url: str
@@ -29,3 +32,6 @@ class PlaylistRequest(BaseModel):
     service: str = "local"
     api_key: Optional[str] = None
     target_lang: Optional[str] = None
+    domain: str = "general"
+    engine: str = "whisper" # 默认使用 whisper
+    llm_correction: bool = False  # LLM 纠错开关

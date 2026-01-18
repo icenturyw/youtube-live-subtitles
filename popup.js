@@ -24,6 +24,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const positionSelect = document.getElementById('position');
     const serverHostInput = document.getElementById('serverHost');
     const authKeyInput = document.getElementById('authKey');
+    const domainSelect = document.getElementById('domain');
+    const engineSelect = document.getElementById('engine'); // 新增识别引擎选择
 
     // 拖拽区域元素
     const dropZone = document.getElementById('dropZone');
@@ -45,6 +47,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 翻译设置元素
     const translateBilingual = document.getElementById('translateBilingual');
     const targetLanguage = document.getElementById('targetLanguage');
+    const clearCacheBtn = document.getElementById('clearCacheBtn'); // 新增清除缓存按钮
+    const llmCorrection = document.getElementById('llmCorrection'); // LLM 纠错开关
 
     let currentVideoId = null;
     let subtitlesVisible = true;
@@ -63,6 +67,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     setupProgressListener();
+
+    // 初始化折叠面板交互
+    setupCollapsiblePanels();
 
     // 服务选择变更
     whisperServiceSelect.addEventListener('change', async () => {
@@ -145,6 +152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     language: languageSelect.value,
                     service: whisperServiceSelect.value,
                     api_key: apiKeyInput.value,
+                    domain: domainSelect.value,
                     target_lang: translateBilingual.checked ? targetLanguage.value : null
                 })
             });
@@ -259,6 +267,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (translateBilingual.checked) {
             formData.append('target_lang', targetLanguage.value);
         }
+        formData.append('domain', domainSelect.value);
 
         showProcessing('正在上传文件...', 0);
 
@@ -315,6 +324,59 @@ document.addEventListener('DOMContentLoaded', async () => {
         downloadFile(srtContent, `${currentVideoId}.srt`, 'text/plain');
     });
 
+    // 清除缓存并重试按钮
+    clearCacheBtn.addEventListener('click', async () => {
+        if (!currentVideoId) {
+            showError('未找到当前视频 ID');
+            return;
+        }
+
+        const confirmDelete = confirm('确定要清除该视频的所有缓存并重新生成字幕吗？');
+        if (!confirmDelete) return;
+
+        try {
+            const serverHost = serverHostInput.value || 'http://127.0.0.1:8765';
+            const authKey = authKeyInput.value;
+
+            // 设置请求头
+            const headers = {
+                'Content-Type': 'application/json'
+            };
+            if (authKey) {
+                headers['X-API-Key'] = authKey;
+            }
+
+            // 调用删除 API
+            const deleteResponse = await fetch(`${serverHost.replace(/\/$/, '')}/cache/${currentVideoId}`, {
+                method: 'DELETE',
+                headers: headers
+            });
+
+            if (deleteResponse.ok) {
+                const result = await deleteResponse.json();
+                console.log('缓存删除成功:', result);
+
+                // 隐藏字幕控制按钮
+                subtitleControls.style.display = 'none';
+
+                // 重置状态
+                progressContainer.style.display = 'block';
+                generateBtn.disabled = true;
+
+                // 获取当前 tab 并重新生成
+                const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+                await startSubtitleGeneration(tab);
+
+            } else {
+                const error = await deleteResponse.json();
+                showError(`删除失败: ${error.detail || '未知错误'}`);
+            }
+        } catch (error) {
+            console.error('清除缓存错误:', error);
+            showError('清除缓存失败，请检查服务器连接');
+        }
+    });
+
     // 样式变更监听
     fontSizeSlider.addEventListener('input', () => {
         fontSizeValue.textContent = fontSizeSlider.value + 'px';
@@ -364,7 +426,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const settings = await chrome.storage.local.get([
             'language', 'whisperService', 'apiKey', 'fontSize', 'position', 'subtitlesVisible',
             'subtitleColor', 'bgColor', 'bgOpacity', 'fontFamily', 'strokeWidth', 'strokeColor',
-            'translateBilingual', 'targetLanguage', 'serverHost', 'authKey'
+            'translateBilingual', 'targetLanguage', 'serverHost', 'authKey', 'domain', 'engine',
+            'llmCorrection', 'collapsedPanels'
         ]);
 
         if (settings.language) languageSelect.value = settings.language;
@@ -413,9 +476,30 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (settings.serverHost) serverHostInput.value = settings.serverHost;
         if (settings.authKey) authKeyInput.value = settings.authKey;
+        if (settings.domain) domainSelect.value = settings.domain;
+        if (settings.engine) engineSelect.value = settings.engine; // 新增
+        if (settings.llmCorrection !== undefined) llmCorrection.checked = settings.llmCorrection;
+
+        // 恢复折叠面板状态
+        if (settings.collapsedPanels) {
+            settings.collapsedPanels.forEach(panelId => {
+                const panel = document.getElementById(panelId);
+                const header = document.querySelector(`[data-target="${panelId}"]`);
+                if (panel && !panel.classList.contains('collapsed')) {
+                    panel.classList.add('collapsed');
+                    if (header) header.classList.remove('expanded');
+                }
+            });
+        }
     }
 
     async function saveSettings() {
+        // 保存折叠面板状态
+        const collapsedPanels = [];
+        document.querySelectorAll('.collapsible-content.collapsed').forEach(panel => {
+            if (panel.id) collapsedPanels.push(panel.id);
+        });
+
         await chrome.storage.local.set({
             language: languageSelect.value,
             whisperService: whisperServiceSelect.value,
@@ -432,7 +516,11 @@ document.addEventListener('DOMContentLoaded', async () => {
             translateBilingual: translateBilingual.checked,
             targetLanguage: targetLanguage.value,
             serverHost: serverHostInput.value,
-            authKey: authKeyInput.value
+            authKey: authKeyInput.value,
+            domain: domainSelect.value,
+            engine: engineSelect.value,
+            llmCorrection: llmCorrection.checked,
+            collapsedPanels: collapsedPanels
         });
     }
 
@@ -552,7 +640,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     api_key: apiKeyInput.value,
                     auth_key: authKeyInput.value,
                     server_host: serverHostInput.value,
+                    domain: domainSelect.value,
                     target_lang: translateBilingual.checked ? targetLanguage.value : null,
+                    llm_correction: llmCorrection.checked,
                     ...getCurrentSettings()
                 }
             });
@@ -661,5 +751,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         a.download = filename;
         a.click();
         URL.revokeObjectURL(url);
+    }
+
+    // 初始化可折叠面板
+    function setupCollapsiblePanels() {
+        document.querySelectorAll('.collapsible-header').forEach(header => {
+            header.addEventListener('click', () => {
+                const targetId = header.getAttribute('data-target');
+                const content = document.getElementById(targetId);
+
+                if (content) {
+                    const isCollapsed = content.classList.toggle('collapsed');
+                    header.classList.toggle('expanded', !isCollapsed);
+
+                    // 保存折叠状态
+                    saveSettings();
+                }
+            });
+        });
     }
 });

@@ -76,6 +76,10 @@
         <button class="control-btn" id="downloadBtn">
           <span>💾</span> 下载 SRT
         </button>
+        <button class="control-btn" id="clearCacheBtn"
+          style="background: linear-gradient(135deg, #f39c12 0%, #e74c3c 100%);">
+          <span>🔄</span> 清除缓存并重试
+        </button>
       </div>
 
       <!-- 设置面板 -->
@@ -96,6 +100,34 @@
             <option value="auto">自动检测</option>
           </select>
         </div>
+        <div class="setting-item">
+          <label for="domain">视频领域 (Prompt 引导)</label>
+          <select id="domain">
+            <option value="general">通用 / 自动</option>
+            <option value="finance">金融交易 (均线/阻力位等)</option>
+            <option value="programming">计算机编程 (异步/类/接口等)</option>
+            <option value="medical">医学健康 (症状/诊断等)</option>
+            <option value="gaming">游戏电竞 (副本/冷却等)</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <label for="engine">本地识别引擎</label>
+          <select id="engine">
+            <option value="whisper">Whisper (通用型)</option>
+            <option value="sensevoice">SenseVoice (中文高精度/极速)</option>
+          </select>
+        </div>
+
+        <div class="setting-item">
+          <label class="switch-label" for="llmCorrection">🧠 LLM 纠错 (需本地 LM Studio)</label>
+          <label class="switch">
+            <input type="checkbox" id="llmCorrection">
+            <span class="slider round"></span>
+          </label>
+          <p class="setting-hint" style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;">
+            使用本地 LLM 修正识别中的错别字</p>
+        </div>
 
         <div class="setting-item">
           <label for="whisperService">识别服务</label>
@@ -110,7 +142,8 @@
         <div class="setting-item" id="serverHostSetting">
           <label for="serverHost">服务器地址</label>
           <input type="text" id="serverHost" placeholder="http://127.0.0.1:8765" value="http://127.0.0.1:8765">
-          <p class="setting-hint" style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;">本地使用默认值，VPS则填入服务器 IP</p>
+          <p class="setting-hint" style="font-size: 10px; color: var(--text-secondary); margin-top: 4px;">
+            本地使用默认值，VPS则填入服务器 IP</p>
         </div>
 
         <div class="setting-item" id="authKeySetting">
@@ -123,25 +156,30 @@
           <input type="password" id="apiKey" placeholder="输入 API Key">
         </div>
 
-        <div class="style-section">
-          <h4>🌍 翻译设置</h4>
-          <div class="setting-item">
-            <label class="switch-label" for="translateBilingual">启用双语字幕</label>
-            <label class="switch">
-              <input type="checkbox" id="translateBilingual">
-              <span class="slider round"></span>
-            </label>
-          </div>
-          <div class="setting-item">
-            <label for="targetLanguage">目标语言</label>
-            <select id="targetLanguage">
-              <option value="zh">中文 (简体)</option>
-              <option value="en">英文</option>
-              <option value="ja">日文</option>
-              <option value="ko">韩文</option>
-              <option value="fr">法语</option>
-              <option value="de">德语</option>
-            </select>
+        <div class="style-section collapsible">
+          <h4 class="collapsible-header" data-target="translateSettings">
+            <span>🌍 翻译设置</span>
+            <span class="collapse-icon">▼</span>
+          </h4>
+          <div class="collapsible-content collapsed" id="translateSettings">
+            <div class="setting-item">
+              <label class="switch-label" for="translateBilingual">启用双语字幕</label>
+              <label class="switch">
+                <input type="checkbox" id="translateBilingual">
+                <span class="slider round"></span>
+              </label>
+            </div>
+            <div class="setting-item">
+              <label for="targetLanguage">目标语言</label>
+              <select id="targetLanguage">
+                <option value="zh">中文 (简体)</option>
+                <option value="en">英文</option>
+                <option value="ja">日文</option>
+                <option value="ko">韩文</option>
+                <option value="fr">法语</option>
+                <option value="de">德语</option>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -160,46 +198,50 @@
         </div>
 
         <!-- 高级样式设置 -->
-        <div class="style-section">
-          <h4>🎨 高级样式</h4>
+        <div class="style-section collapsible">
+          <h4 class="collapsible-header" data-target="advancedStyles">
+            <span>🎨 高级样式</span>
+            <span class="collapse-icon">▼</span>
+          </h4>
+          <div class="collapsible-content collapsed" id="advancedStyles">
+            <div class="setting-item">
+              <label for="subtitleColor">字幕颜色</label>
+              <input type="color" id="subtitleColor" value="#ffffff">
+            </div>
 
-          <div class="setting-item">
-            <label for="subtitleColor">字幕颜色</label>
-            <input type="color" id="subtitleColor" value="#ffffff">
-          </div>
+            <div class="setting-item">
+              <label for="bgColor">背景颜色</label>
+              <input type="color" id="bgColor" value="#000000">
+            </div>
 
-          <div class="setting-item">
-            <label for="bgColor">背景颜色</label>
-            <input type="color" id="bgColor" value="#000000">
-          </div>
+            <div class="setting-item">
+              <label for="bgOpacity">背景透明度</label>
+              <input type="range" id="bgOpacity" min="0" max="100" value="80">
+              <span id="bgOpacityValue">80%</span>
+            </div>
 
-          <div class="setting-item">
-            <label for="bgOpacity">背景透明度</label>
-            <input type="range" id="bgOpacity" min="0" max="100" value="80">
-            <span id="bgOpacityValue">80%</span>
-          </div>
+            <div class="setting-item">
+              <label for="fontFamily">字体</label>
+              <select id="fontFamily">
+                <option value="Arial, sans-serif">Arial</option>
+                <option value="'Microsoft YaHei', sans-serif">微软雅黑</option>
+                <option value="'SimHei', sans-serif">黑体</option>
+                <option value="'SimSun', serif">宋体</option>
+                <option value="'KaiTi', serif">楷体</option>
+                <option value="'Courier New', monospace">Courier New</option>
+              </select>
+            </div>
 
-          <div class="setting-item">
-            <label for="fontFamily">字体</label>
-            <select id="fontFamily">
-              <option value="Arial, sans-serif">Arial</option>
-              <option value="'Microsoft YaHei', sans-serif">微软雅黑</option>
-              <option value="'SimHei', sans-serif">黑体</option>
-              <option value="'SimSun', serif">宋体</option>
-              <option value="'KaiTi', serif">楷体</option>
-              <option value="'Courier New', monospace">Courier New</option>
-            </select>
-          </div>
+            <div class="setting-item">
+              <label for="strokeWidth">描边宽度</label>
+              <input type="range" id="strokeWidth" min="0" max="4" value="2" step="0.5">
+              <span id="strokeWidthValue">2px</span>
+            </div>
 
-          <div class="setting-item">
-            <label for="strokeWidth">描边宽度</label>
-            <input type="range" id="strokeWidth" min="0" max="4" value="2" step="0.5">
-            <span id="strokeWidthValue">2px</span>
-          </div>
-
-          <div class="setting-item">
-            <label for="strokeColor">描边颜色</label>
-            <input type="color" id="strokeColor" value="#000000">
+            <div class="setting-item">
+              <label for="strokeColor">描边颜色</label>
+              <input type="color" id="strokeColor" value="#000000">
+            </div>
           </div>
         </div>
 
