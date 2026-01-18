@@ -34,9 +34,18 @@ class SupabaseDB:
             return False
         
         try:
-            # 插入或更新
-            # data 应该包含 video_id, language, service, domain, engine, subtitles
-            self.client.table("subtitles").upsert(data).execute()
+            # [ROBUST] Filter data to keys that are likely to exist
+            # If target_lang fails, we try again without it to ensure at least core data is synced
+            try:
+                self.client.table("subtitles").upsert(data).execute()
+            except Exception as e:
+                if 'target_lang' in str(e):
+                    logging.warning(f"Supabase 缺少 'target_lang' 字段，尝试排除该字段后重新同步")
+                    subset = {k: v for k, v in data.items() if k != 'target_lang'}
+                    self.client.table("subtitles").upsert(subset).execute()
+                else:
+                    raise e
+            
             logging.info(f"Supabase 数据已同步: {data.get('video_id')}")
             return True
         except Exception as e:

@@ -140,8 +140,12 @@ A: 首次启动会下载 Whisper 模型（约 150MB），请耐心等待。
 ### Q: 识别不准确？
 A: 尝试使用更大的模型（如 `small` 或 `medium`）。
 
-### Q: 下载失败？
-A: 确保 yt-dlp 可以正常访问 YouTube，可能需要代理。
+### Q: Supabase 同步报错 "Could not find the 'target_lang' column"?
+A: 因为新增了二级缓存功能，需要在 Supabase 的 SQL Editor 中执行以下命令添加字段：
+```sql
+ALTER TABLE subtitles ADD COLUMN IF NOT EXISTS target_lang TEXT;
+```
+执行后重启服务即可正常同步。
 
 ## 许可证
 
