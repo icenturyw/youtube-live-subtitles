@@ -115,7 +115,9 @@ class TaskManager:
             task_id = task.get('task_id')
             try:
                 logging.info(f"[{task_id}] 开始处理任务")
+                logging.info(f"[Worker] 正在处理任务: {task_id}")
                 self._process_task(task)
+                logging.info(f"[Worker] 任务处理结束: {task_id}")
                 duration = time.time() - start_time
                 logging.info(f"[{task_id}] 任务处理成功, 总耗时: {duration:.2f}s")
             except Exception as e:
@@ -165,7 +167,9 @@ class TaskManager:
 
             # 2. 检查阶段性缓存 (原始识别结果)
             raw_cached = self._get_raw_cache(video_id)
-            if raw_cached and raw_cached.get('engine') == engine_type and raw_cached.get('domain') == domain:
+            # [FIX] 仅当原始识别结果不为空时才命中缓存
+            if (raw_cached and raw_cached.get('engine') == engine_type and 
+                raw_cached.get('domain') == domain and raw_cached.get('subtitles')):
                 logging.info(f"[Task {task_id}] 命中原始识别缓存，跳过 Whisper，直接进入后续流程")
                 subtitles = raw_cached.get('subtitles')
                 detected_lang = raw_cached.get('language')
@@ -174,6 +178,7 @@ class TaskManager:
                 audio_path = self._download_audio(video_url, task_id)
                 
                 # Transcription Stage
+                logging.info(f"[Task {task_id}] 开始识别阶段, 模式: {service}, 引擎: {engine_type}")
                 if service == 'local':
                     if engine_type == 'sensevoice':
                         from core.sensevoice_engine import sensevoice_engine
@@ -207,10 +212,14 @@ class TaskManager:
 
         # [MODIFIED] 不再自动删除音频文件，以便复用
         # Cache final results
-        if video_url:
+        if video_url and subtitles:
             self._save_cache(video_id, subtitles, detected_lang, service, domain, engine_type, target_lang)
-        
-        self.update_task(task_id, 'completed', 100, '完成', subtitles, detected_lang)
+            self.update_task(task_id, 'completed', 100, '完成', subtitles, detected_lang)
+        elif video_url and not subtitles:
+            logging.warning(f"[{task_id}] 未识别到任何内容，不保存缓存")
+            raise Exception("Groq/Whisper 未识别到任何有效音频内容。请确认视频是否有语音，或尝试开启 '清除缓存并重试'。")
+        else:
+            self.update_task(task_id, 'completed', 100, '完成', subtitles, detected_lang)
         # 确保完成的任务里也包含 domain 信息
         if task_id in self.tasks:
             self.tasks[task_id]['domain'] = domain
@@ -425,6 +434,9 @@ class TaskManager:
         original_path = audio_path
         audio_path = compress_audio(audio_path)
         
+        file_size = os.path.getsize(audio_path)
+        logging.info(f"[{task_id}] 上传音频文件大小: {file_size / 1024 / 1024:.2f} MB")
+        
         self.update_task(task_id, 'transcribing', 48, f'正在向 {service.upper()} 上传并识别...')
         
         url = "https://api.groq.com/openai/v1/audio/transcriptions" if service == 'groq' else "https://api.openai.com/v1/audio/transcriptions"
@@ -434,7 +446,11 @@ class TaskManager:
         
         try:
             files = {"file": (Path(audio_path).name, open(audio_path, "rb"), "audio/mpeg")}
-            data = {"model": model_name, "response_format": "verbose_json"}
+            # [DEBUG] 暂时移除单词级时间戳，观察是否由于此参数导致内容为空
+            data = {
+                "model": model_name, 
+                "response_format": "verbose_json"
+            }
             if language and language != 'auto':
                 data["language"] = language
             if initial_prompt:
@@ -461,31 +477,128 @@ class TaskManager:
 
                 files["file"][1].close()
                 
-                if audio_path != original_path and os.path.exists(audio_path):
-                    os.remove(audio_path)
-                
                 result = response.json()
-                raw_segments = result.get('segments', [])
+                logging.info(f"[{task_id}] {service.upper()} API 响应内容摘要: {str(result)[:200]}...")
+                raw_segments = result.get('segments') or []
                 detected_lang = result.get('language', language)
-                
+
+                # [方案二] 强制对齐流程：如果需要拆分长句且 API 没给单词级时间戳，则调用本地模型补全
+                # 先把 API 的结果转成标准格式
                 subtitles = []
                 for seg in raw_segments:
-                    text = seg['text'].strip()
+                    text = (seg.get('text') or '').strip()
                     if not text: continue
                     if converter: text = converter.convert(text)
+                    parts = split_text(text, lang=detected_lang if detected_lang else 'zh')
                     
-                    if len(text) > 25:
-                        parts = split_text(text, lang=detected_lang if detected_lang else 'zh')
-                        duration = seg['end'] - seg['start']
-                        p_dur = duration / len(parts)
-                        for i, p in enumerate(parts):
+                    api_words = seg.get('words') or []
+                    
+                    # 只有在需要拆分且 API 没给有效单词时间戳时，才考虑通过本地模型补全
+                    if len(parts) > 1 and not api_words:
+                        logging.info(f"[{task_id}] API 未返回单词时间戳，尝试通过本地模型进行强制对齐...")
+                        # 获取这一段对应的本地单词时间戳
+                        # 为了性能，我们可以复用本地识别逻辑的一个子集
+                        try:
+                            # 实际上，这里我们可以让本地 whisper 只跑这一段所在的音频，或者直接全局跑一次 tiny 模型
+                            # 考虑到架构简单，我们在这里尝试获取全局的本地单词时间戳（如果还没获取的话）
+                            if not getattr(self, '_local_words_cache', None) or self._local_words_cache.get('video_id') != task_id:
+                                logging.info(f"[{task_id}] 正在初始化本地轻量级模型进行全局单词对齐...")
+                                from core.whisper_engine import whisper_engine
+                                
+                                # [FIX] Convert language name to code (e.g., 'Chinese' -> 'zh')
+                                lang_map = {
+                                    'chinese': 'zh', 'english': 'en', 'japanese': 'ja', 'korean': 'ko',
+                                    'french': 'fr', 'german': 'de', 'russian': 'ru', 'spanish': 'es',
+                                    'cantonese': 'yue'
+                                }
+                                local_lang = detected_lang.lower() if detected_lang else None
+                                if local_lang in lang_map:
+                                    local_lang = lang_map[local_lang]
+                                
+                                # 使用较小的模型或当前的全局模型跑一遍，核心是开启 word_timestamps
+                                local_segs, _ = whisper_engine.transcribe(audio_path, language=local_lang)
+                                all_local_words = []
+                                for ls in local_segs:
+                                    if hasattr(ls, 'words') and ls.words:
+                                        for lw in ls.words:
+                                            all_local_words.append({
+                                                'start': lw.start,
+                                                'end': lw.end,
+                                                'word': lw.word
+                                            })
+                                    elif isinstance(ls, dict) and ls.get('words'):
+                                        all_local_words.extend(ls['words'])
+                                        
+                                self._local_words_cache = {'video_id': task_id, 'words': all_local_words}
+                            
+                            api_words = self._local_words_cache['words']
+                        except Exception as alignment_err:
+                            logging.warning(f"[{task_id}] 本地强制对齐失败: {alignment_err}，回退到按比例拆分")
+
+                    # 执行单词级映射拆分逻辑
+                    if len(parts) > 1 and api_words:
+                        # 此处复用之前的精准映射逻辑，但加入了简单的模糊匹配或位置匹配
+                        word_idx = 0
+                        # 缩小单词搜索范围：仅寻找在该段 API segment 时间窗口附近的本地单词
+                        seg_start = seg.get('start', 0)
+                        seg_end = seg.get('end', 0)
+                        relevant_words = [w for w in api_words if w.get('start', 0) >= seg_start - 1 and w.get('end', 0) <= seg_end + 1]
+                        
+                        if not relevant_words: relevant_words = api_words # Fallback
+
+                        last_end = seg_start
+                        for part in parts:
+                            part_cleaned = part.replace(" ", "").lower()
+                            if not part_cleaned: continue
+                            
+                            part_start = None
+                            current_part_content = ""
+                            
+                            while word_idx < len(relevant_words):
+                                w = relevant_words[word_idx]
+                                w_text = w.get('word', '').strip().lower()
+                                if not w_text:
+                                    word_idx += 1
+                                    continue
+                                
+                                if part_start is None:
+                                    part_start = max(w.get('start', 0), last_end)
+                                
+                                current_part_content += w_text
+                                last_end = w.get('end', last_end)
+                                word_idx += 1
+                                
+                                # 只要识别到的本地单词内容覆盖了 API 拆分后的片段
+                                if len(current_part_content) >= len(part_cleaned):
+                                    break
+                            
+                            s_time = round(part_start if part_start is not None else last_end, 2)
+                            e_time = round(last_end, 2)
+                            if e_time <= s_time:
+                                e_time = s_time + 0.1
+
                             subtitles.append({
-                                'start': round(seg['start'] + i * p_dur, 2),
-                                'end': round(seg['start'] + (i + 1) * p_dur, 2),
-                                'text': p
+                                'start': s_time,
+                                'end': e_time,
+                                'text': part
                             })
                     else:
-                        subtitles.append({'start': round(seg['start'], 2), 'end': round(seg['end'], 2), 'text': text})
+                        # 没拆分或者没有单词时间戳的回退：按比例
+                        if len(parts) > 1:
+                            duration = seg['end'] - seg['start']
+                            p_dur = duration / len(parts)
+                            for i, p in enumerate(parts):
+                                subtitles.append({
+                                    'start': round(seg['start'] + i * p_dur, 2),
+                                    'end': round(seg['start'] + (i + 1) * p_dur, 2),
+                                    'text': p
+                                })
+                        else:
+                            subtitles.append({
+                                'start': round(seg.get('start', 0), 2),
+                                'end': round(seg.get('end', 0), 2),
+                                'text': text
+                            })
                 
                 return subtitles, detected_lang
         except Exception as e:

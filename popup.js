@@ -714,6 +714,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusText.textContent = '字幕已就绪';
         progressContainer.style.display = 'none';
         subtitleControls.style.display = 'flex';
+
+        // [MODIFIED] Restore success buttons
+        subtitleToggle.parentElement.style.display = 'flex';
+        downloadBtn.style.display = 'block';
+        clearCacheBtn.style.display = 'block';
+
         const btnText = generateBtn.querySelector('.btn-text');
         if (btnText) btnText.textContent = '重新生成';
         generateBtn.disabled = false;
@@ -723,6 +729,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusIndicator.className = 'status-indicator error';
         statusText.textContent = message;
         progressContainer.style.display = 'none';
+
+        // [MODIFIED] Show control panel so users can clear cache and retry
+        subtitleControls.style.display = 'flex';
+        // Hide success-only buttons
+        subtitleToggle.parentElement.style.display = 'none';
+        downloadBtn.style.display = 'none';
+        clearCacheBtn.style.display = 'block';
+
         setTimeout(() => { checkService(); }, 5000);
     }
 
