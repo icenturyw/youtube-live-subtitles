@@ -920,10 +920,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
     
     def do_GET(self):
-        if self.path == '/':
+        if self.path == '/' or self.path == '/health':
             self._send_json({
                 'service': 'YouTube 本地 Whisper 服务 (Queue Mode)',
-                'status': 'running',
+                'status': 'ok',
                 'queue_size': task_queue.qsize(),
                 'local_whisper': HAS_LOCAL_WHISPER,
                 'cloud_sync': HAS_MONGO

@@ -183,12 +183,13 @@ Note: Start you answer with ```json and end with ```, do not add any other text.
 def get_prompt_expressiveness(faithfulness_result, lines, shared_prompt, src_lang, tgt_lang):
     json_format = {
         key: {
-            "origin": value["origin"],
-            "direct": value["direct"],
+            "origin": value.get("origin", ""),
+            "direct": value.get("direct", ""),
             "reflect": "your reflection on direct translation",
             "free": "your free translation"
         }
         for key, value in faithfulness_result.items()
+        if isinstance(value, dict)
     }
     json_format_str = json.dumps(json_format, indent=2, ensure_ascii=False)
 
@@ -261,10 +262,10 @@ Correct the following subtitle lines for typos, homophones, or obvious transcrip
 {lines}
 
 ## Output in specific JSON format
-`json
+```json
 {json_format}
-``r
+```
 
-Note: Start you answer with `json and end with `, do not add any other text.
+Note: Start you answer with ```json and end with ```, do not add any other text.
 '''.strip()
     return prompt

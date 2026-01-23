@@ -10,10 +10,17 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 import json_repair
-from core.utils import get_video_id, split_text, compress_audio, converter, CACHE_DIR, TEMP_DIR, RAW_CACHE_DIR
+from core.utils import get_video_id, split_text, compress_audio, get_audio_duration, split_audio, converter, CACHE_DIR, TEMP_DIR, RAW_CACHE_DIR
 from core.whisper_engine import whisper_engine
 from db.supabase_db import supabase_db
 from core.lexicon import get_prompt_by_domain
+
+# 幻觉黑名单：Whisper 模型在遇到静音或无意义音频时常产生的“幻觉”短语
+LLM_HALLUCINATION_BLACKLIST = [
+    "点赞", "订阅", "转发", "打赏", "支持明镜", "点点栏目", "谢看", "多谢看", 
+    "字幕由", "制作", "欢迎订阅", "谢谢观看", "观看更多", "关注我的频道"
+]
+
 from core.prompts import (
     get_prompt_faithfulness, 
     get_prompt_correction, 
@@ -190,6 +197,9 @@ class TaskManager:
                         logging.info(f"[Task {task_id}] 使用本地 Whisper 识别 (Prompt: {domain})")
                         self.update_task(task_id, 'transcribing', 30, '正在使用 Whisper 识别...')
                         subtitles, detected_lang = self._transcribe_locally(audio_path, task_id, language, initial_prompt=initial_prompt)
+                elif service == 'cloudflare':
+                    logging.info(f"[Task {task_id}] 使用 Cloudflare Workers AI 识别")
+                    subtitles, detected_lang = self._transcribe_via_cloudflare(audio_path, task_id, language)
                 else:
                     logging.info(f"[Task {task_id}] 使用 {service.upper()} API 识别 (Prompt: {domain})")
                     subtitles, detected_lang = self._transcribe_via_api(audio_path, task_id, language, api_key, service, initial_prompt=initial_prompt)
@@ -205,10 +215,17 @@ class TaskManager:
             subtitles = self._correct_transcription(subtitles, detected_lang)
 
         if target_lang and subtitles:
-            self.update_task(task_id, 'transcribing', 90, f'正在翻译为 {target_lang}...')
             trans_start = time.time()
-            subtitles = self._translate_subtitles(subtitles, target_lang, api_key, service if service != 'local' else 'groq', src_lang=detected_lang, task_id=task_id, llm_correction=llm_correction_enabled)
-            logging.info(f"[{task_id}] 翻译完成, 耗时: {time.time() - trans_start:.2f}s")
+            subtitles = self._translate_subtitles(
+                subtitles, 
+                target_lang, 
+                api_key, 
+                service, 
+                src_lang=detected_lang, 
+                task_id=task_id, 
+                llm_correction=llm_correction_enabled
+            )
+            logging.info(f"[{task_id}] 翻译阶段耗时: {time.time() - trans_start:.2f}s")
 
         # [MODIFIED] 不再自动删除音频文件，以便复用
         # Cache final results
@@ -419,6 +436,25 @@ class TaskManager:
                     if e_time <= s_time:
                          e_time = s_time + 0.1 # 最小持续时间
 
+                    text_clean = part.replace(" ", "").replace(",", "").replace(".", "").replace("!", "").replace("?", "").lower()
+                    
+                    # 判据 1：完全匹配黑名单词 (例如纯粹的 "点赞" 占用了很长时间)
+                    is_exact_match = any(text_clean == term.replace(" ", "").lower() for term in LLM_HALLUCINATION_BLACKLIST)
+                    # 判据 2：包含特定的、极其独特的幻觉短语 (明镜/点点栏目)
+                    specific_hallucinations = ["支持明镜", "点点栏目"]
+                    is_specific_pattern = any(term in text_clean for term in specific_hallucinations)
+                    
+                    filtered = False
+                    duration = e_time - s_time
+                    if is_exact_match and duration > 5:
+                        filtered = True
+                    elif is_specific_pattern and (duration > 10 and len(text_clean) < 35):
+                        filtered = True
+                    
+                    if filtered:
+                        logging.info(f"[{task_id}] 过滤疑似幻觉内容: {part} ({duration}s)")
+                        continue
+
                     subtitles.append({
                         'start': s_time,
                         'end': e_time,
@@ -440,7 +476,7 @@ class TaskManager:
         self.update_task(task_id, 'transcribing', 48, f'正在向 {service.upper()} 上传并识别...')
         
         url = "https://api.groq.com/openai/v1/audio/transcriptions" if service == 'groq' else "https://api.openai.com/v1/audio/transcriptions"
-        model_name = "whisper-large-v3" if service == 'groq' else "whisper-1"
+        model_name = "whisper-large-v3-turbo" if service == 'groq' else "whisper-1"
         
         headers = {"Authorization": f"Bearer {api_key}"}
         
@@ -488,6 +524,27 @@ class TaskManager:
                 for seg in raw_segments:
                     text = (seg.get('text') or '').strip()
                     if not text: continue
+                    
+                    # 幻觉预过滤 (API 响应级)
+                    short_text = text.replace(" ", "").replace(",", "").replace(".", "").replace("!", "").replace("?", "").lower()
+                    
+                    # 判据 1：完全匹配黑名单词
+                    is_exact_match = any(short_text == term.replace(" ", "").lower() for term in LLM_HALLUCINATION_BLACKLIST)
+                    # 判据 2：特征幻觉匹配
+                    specific_hallucinations = ["支持明镜", "点点栏目"]
+                    is_specific_pattern = any(term in short_text for term in specific_hallucinations)
+                    
+                    filtered = False
+                    duration = seg.get('end', 0) - seg.get('start', 0)
+                    if is_exact_match and duration > 5:
+                        filtered = True
+                    elif is_specific_pattern and (duration > 10 and len(short_text) < 35):
+                        filtered = True
+
+                    if filtered:
+                        logging.warning(f"[{task_id}] API 返回内容疑似幻觉，已拦截: {text} ({duration}s)")
+                        continue
+
                     if converter: text = converter.convert(text)
                     parts = split_text(text, lang=detected_lang if detected_lang else 'zh')
                     
@@ -604,6 +661,127 @@ class TaskManager:
         except Exception as e:
             raise Exception(f"{service.upper()} API 调用失败: {str(e)}")
 
+    def _transcribe_via_cloudflare(self, audio_path, task_id, language):
+        """
+        使用 Cloudflare Workers AI 的 Whisper 模型进行语音识别
+        API 文档: https://developers.cloudflare.com/workers-ai/models/whisper/
+        """
+        account_id = os.environ.get('CLOUDFLARE_ACCOUNT_ID')
+        api_token = os.environ.get('CLOUDFLARE_API_TOKEN')
+        
+        if not account_id or not api_token:
+            raise Exception("未配置 CLOUDFLARE_ACCOUNT_ID 或 CLOUDFLARE_API_TOKEN 环境变量")
+        
+        self.update_task(task_id, 'transcribing', 48, '正在处理音频...')
+        
+        # 1. 压缩音频
+        audio_path = compress_audio(audio_path)
+        
+        # 2. 检查大小并决定是否分段
+        file_size = os.path.getsize(audio_path)
+        if file_size > 25 * 1024 * 1024:
+            logging.info(f"[{task_id}] 压缩后音频仍然较大 ({file_size / 1024 / 1024:.2f} MB)，执行分段识别流程")
+            # 每 5 分钟分一段 (约 300 秒) 以确保万无一失
+            chunks = split_audio(audio_path, segment_duration=300)
+            logging.info(f"[{task_id}] 音频已被分割为 {len(chunks)} 个片段")
+        else:
+            chunks = [audio_path]
+        
+        all_subtitles = []
+        detected_lang = language if language != 'auto' else 'zh'
+        current_time_offset = 0
+        
+        # 使用最新的 whisper-large-v3-turbo 模型
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/openai/whisper-large-v3-turbo"
+        headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            import base64
+            for i, chunk_path in enumerate(chunks):
+                chunk_idx = i + 1
+                progress = 48 + int((i / len(chunks)) * 45)
+                self.update_task(task_id, 'transcribing', progress, f'正在识别第 {chunk_idx}/{len(chunks)} 个分段...')
+                
+                with open(chunk_path, 'rb') as f:
+                    audio_data = f.read()
+                    base64_audio = base64.b64encode(audio_data).decode('utf-8')
+                
+                payload = {
+                    "audio": base64_audio,
+                    "task": "transcribe",
+                    "vad_filter": True
+                }
+                
+                # 如果指定了语言且不是 auto，则传递给 API
+                if detected_lang and detected_lang != 'auto':
+                    payload["language"] = detected_lang
+
+                # Cloudflare AI REST API 接受 Base64 编码的 JSON
+                with httpx.Client(timeout=300.0) as client:
+                    response = client.post(url, headers=headers, json=payload)
+                    
+                    if response.status_code == 413:
+                        logging.error(f"[{task_id}] 第 {chunk_idx} 个片段仍然太大 (413)")
+                        continue # 尝试下一个或报错
+                    
+                    if response.status_code != 200:
+                        logging.error(f"[{task_id}] 第 {chunk_idx} 个片段识别失败 ({response.status_code})")
+                        continue
+                    
+                    result = response.json()
+                    if not result.get('success', False):
+                        continue
+                        
+                    ai_result = result.get('result', {})
+                    chunk_subs = []
+                    segments = ai_result.get('segments') or ai_result.get('words') or []
+                    full_text = ai_result.get('text', '')
+                    
+                    if segments:
+                        for seg in segments:
+                            text = seg.get('text', '').strip()
+                            if not text: continue
+                            if converter: text = converter.convert(text)
+                            
+                            chunk_subs.append({
+                                'start': round(seg.get('start', 0) + current_time_offset, 2),
+                                'end': round(seg.get('end', 0) + current_time_offset, 2),
+                                'text': text
+                            })
+                    elif full_text:
+                        # 估算时间对齐
+                        sentences = split_text(full_text, lang=detected_lang)
+                        duration = ai_result.get('duration') or get_audio_duration(chunk_path) or 600.0
+                        time_per_sentence = duration / len(sentences) if sentences else 0
+                        for j, sentence in enumerate(sentences):
+                            if converter: sentence = converter.convert(sentence)
+                            chunk_subs.append({
+                                'start': round(j * time_per_sentence + current_time_offset, 2),
+                                'end': round((j + 1) * time_per_sentence + current_time_offset, 2),
+                                'text': sentence
+                            })
+                    
+                    all_subtitles.extend(chunk_subs)
+                    
+                    # 更新时间偏移
+                    current_time_offset += get_audio_duration(chunk_path)
+                    
+                    # 清理分理出的临时片段文件
+                    if chunk_path != audio_path:
+                        try: os.remove(chunk_path)
+                        except: pass
+
+            if not all_subtitles:
+                raise Exception("所有音频片段识别均失败或未返回内容")
+                
+            return all_subtitles, detected_lang
+                
+        except Exception as e:
+            raise Exception(f"Cloudflare Workers AI 调用失败: {str(e)}")
+
     def _ask_llm(self, prompt, model_name, url, headers, resp_type="json", trust_env=False, task_id=None):
         payload = {
             "model": model_name,
@@ -649,22 +827,49 @@ class TaskManager:
         if not subtitles or not target_lang:
             return subtitles
 
-        if src_lang == target_lang:
+        # Normalize languages for comparison
+        lang_norm = {
+            'simplified chinese': 'zh', 'chinese': 'zh', 'zh-cn': 'zh', 'zh-tw': 'zh', 
+            'traditional chinese': 'zh', 'zh-hans': 'zh', 'zh-hant': 'zh', 'zh-hk': 'zh',
+            'english': 'en', 'en-us': 'en', 'en-gb': 'en',
+            'japanese': 'ja', 'ja-jp': 'ja',
+            'korean': 'ko', 'ko-kr': 'ko'
+        }
+        
+        def normalize(l):
+            if not l: return 'auto'
+            l = str(l).lower().strip().replace('_', '-')
+            if l in lang_norm: return lang_norm[l]
+            base = l.split('-')[0]
+            return lang_norm.get(base, base)
+
+        src_base = normalize(src_lang)
+        tgt_base = normalize(target_lang)
+
+        # 增加内容检测：如果包含大量中文字符且目标是中文，直接跳过翻译
+        def has_chinese(text):
+            return any('\u4e00' <= char <= '\u9fff' for char in text)
+
+        is_source_chinese = has_chinese("\n".join([s['text'] for s in subtitles[:10]]))
+        
+        logging.info(f"[{task_id}] Translation check: src_detected={src_lang} (normed:{src_base}) -> tgt={target_lang} (normed:{tgt_base}). Source has Chinese: {is_source_chinese}")
+
+        if (src_base == tgt_base and src_base != 'auto') or (is_source_chinese and tgt_base == 'zh'):
             lm_studio_url = os.environ.get('LM_STUDIO_API_URL')
-            # 如果同语言：
-            # 1. 如果纠错关闭 -> 跳过
-            # 2. 如果纠错开启且 LM Studio 已经处理过 -> 跳过
-            # 3. 否则（开启纠错但没用 LM Studio）-> 继续（利用翻译流水线作为 fallback 纠错）
             if not llm_correction or lm_studio_url:
-                logging.info(f"[{task_id}] Source language ({src_lang}) matches target, skipping translation (Correction: {llm_correction}, LM Studio: {'Yes' if lm_studio_url else 'No'}).")
+                logging.info(f"[{task_id}] Skipping translation: languages compatible or source is already Chinese.")
                 return subtitles
+
+        self.update_task(task_id, 'transcribing', 95, f'正在翻译为 {target_lang}...')
 
         # Prepare LLM config
         lm_studio_url = os.environ.get('LM_STUDIO_API_URL')
         lm_studio_model = os.environ.get('LM_STUDIO_MODEL_NAME', 'local-model')
+        siliconflow_key = os.environ.get('SILICONFLOW_API_KEY')
         
         headers = {"Content-Type": "application/json"}
         trust_env = True
+        
         if lm_studio_url:
             url = lm_studio_url.rstrip('/')
             if not any(url.endswith(s) for s in ['/chat/completions', '/v1']):
@@ -674,10 +879,53 @@ class TaskManager:
             model_name = lm_studio_model
             trust_env = False
         else:
-            if not api_key: return subtitles
-            url = "https://api.groq.com/openai/v1/chat/completions" if service == 'groq' else "https://api.openai.com/v1/chat/completions"
-            model_name = "llama-3.3-70b-versatile" if service == 'groq' else "gpt-4o-mini"
-            headers["Authorization"] = f"Bearer {api_key}"
+            # 自动选择服务
+            openai_key = os.environ.get('OPENAI_API_KEY')
+            groq_key = os.environ.get('GROQ_API_KEY')
+            
+            # 判断有效 Key (排除占位符)
+            def is_valid(k):
+                return k and 'your_' not in k.lower()
+
+            # 优先级：SiliconFlow -> OpenAI -> Groq
+            effective_service = service
+            e_key = None
+            
+            if is_valid(api_key): # 优先使用前端传入的
+                e_key = api_key
+                effective_service = service
+            elif is_valid(siliconflow_key):
+                e_key = siliconflow_key
+                effective_service = 'siliconflow'
+            elif is_valid(openai_key):
+                e_key = openai_key
+                effective_service = 'openai'
+            elif is_valid(groq_key):
+                # 除非用户明确指定使用 Groq，或者没别的选了，否则不优先使用 Groq (因为额度限制)
+                if service == 'groq' or not any([is_valid(siliconflow_key), is_valid(openai_key)]):
+                    e_key = groq_key
+                    effective_service = 'groq'
+            
+            if not e_key:
+                logging.warning(f"[{task_id}] No valid API Key found for translation, skipping.")
+                return subtitles
+
+            if effective_service == 'siliconflow':
+                url = "https://api.siliconflow.cn/v1/chat/completions"
+                model_name = "deepseek-ai/DeepSeek-V3"
+                headers["Authorization"] = f"Bearer {e_key}"
+            elif effective_service == 'groq':
+                # 用户反映 Groq 翻译没额度，这里做个防护
+                if not service == 'groq': # 如果不是用户明确点的，就不尝试 Groq
+                     logging.warning(f"[{task_id}] Potential Groq quota issue, skipping translation.")
+                     return subtitles
+                url = "https://api.groq.com/openai/v1/chat/completions"
+                model_name = "llama-3.3-70b-versatile"
+                headers["Authorization"] = f"Bearer {e_key}"
+            else: # openai
+                url = "https://api.openai.com/v1/chat/completions"
+                model_name = "gpt-4o-mini"
+                headers["Authorization"] = f"Bearer {e_key}"
 
         lang_map = {'zh': 'Simplified Chinese', 'en': 'English', 'ja': 'Japanese', 'ko': 'Korean', 'fr': 'French', 'de': 'German', 'es': 'Spanish', 'ru': 'Russian'}
         target_lang_name = lang_map.get(target_lang, target_lang)

@@ -15,9 +15,14 @@ router = APIRouter()
 API_AUTH_KEY = os.environ.get("API_AUTH_KEY", "your-secret-key")
 
 async def verify_api_key(x_api_key: Optional[str] = Header(None)):
-    if x_api_key != API_AUTH_KEY:
+    if API_AUTH_KEY and x_api_key != API_AUTH_KEY:
         raise HTTPException(status_code=401, detail="Invalid API Key")
     return x_api_key
+
+@router.get("/")
+@router.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @router.post("/transcribe")
 async def transcribe(request: TranscribeRequest, auth: str = Depends(verify_api_key)):
@@ -127,12 +132,11 @@ async def get_task_status(task_id: str):
 
 @router.get("/status/{video_id}")
 async def get_video_status(video_id: str):
-    # This matches the old API's behavior of checking for cached/completed subtitles for a video_id
-    # We check if a completed task exists for this video_id in the manager or cache
-    # For now, we'll delegate to task_manager to look up by video_id
+    # 检查任务是否在内存中或缓存中
     task = task_manager.get_task_by_video_id(video_id)
     if not task:
-         raise HTTPException(status_code=404, detail="Status not found")
+         # 返回 200 而非 404，避免日志干扰，通过 status 区分
+         return {"task_id": video_id, "status": "not_found", "message": "No existing data for this video"}
     return task
 
 from fastapi import File, UploadFile, Form

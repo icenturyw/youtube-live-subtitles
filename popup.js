@@ -87,7 +87,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             apiKeyInput.placeholder = 'sk_...';
         }
 
-        if (service === 'local') {
+        if (service === 'local' || service === 'cloudflare') {
             serverHostSetting.style.display = 'block';
             authKeySetting.style.display = 'block';
             await checkService();
@@ -113,7 +113,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // 检查本地服务
-        if (whisperServiceSelect.value === 'local') {
+        if (whisperServiceSelect.value === 'local' || whisperServiceSelect.value === 'cloudflare') {
             const available = await checkServiceAvailable(tab.id);
             if (!available) {
                 showError('本地 Whisper 服务未运行！请先启动 whisper-server/start.bat');
@@ -604,14 +604,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function checkExistingSubtitles() {
-        const { videoId } = await checkYouTubePage();
+        const { videoId, tab } = await checkYouTubePage();
         if (!videoId) return;
         currentVideoId = videoId;
+
+        // 1. 先检查本地存储
         const cached = await chrome.storage.local.get(`subtitles_${videoId}`);
         if (cached[`subtitles_${videoId}`]) {
             currentSubtitles = cached[`subtitles_${videoId}`];
             showSubtitlesReady();
-            const { tab } = await checkYouTubePage();
             if (tab) {
                 await ensureContentScriptLoaded(tab.id);
                 sendMessageToContentScript(tab.id, {
@@ -619,6 +620,27 @@ document.addEventListener('DOMContentLoaded', async () => {
                     subtitles: currentSubtitles,
                     settings: getCurrentSettings()
                 });
+            }
+            return;
+        }
+
+        // 2. 如果存储没有，询问 Content Script 是否正在处理或已有数据
+        if (tab) {
+            try {
+                await ensureContentScriptLoaded(tab.id);
+                const state = await sendMessageToContentScript(tab.id, { action: 'getState' });
+                if (state) {
+                    if (state.isProcessing) {
+                        progressContainer.style.display = 'block';
+                        updateProgress(state.lastProgress.percent, state.lastProgress.text);
+                        generateBtn.disabled = true;
+                    } else if (state.subtitles && state.subtitles.length > 0) {
+                        currentSubtitles = state.subtitles;
+                        showSubtitlesReady();
+                    }
+                }
+            } catch (e) {
+                console.log('无法获取 Content Script 状态:', e);
             }
         }
     }

@@ -206,15 +206,56 @@ def compress_audio(audio_path):
         return audio_path
     
     compressed_path = str(Path(audio_path).parent / f"compressed_{Path(audio_path).name}")
-    cmd = ['ffmpeg', '-y', '-i', audio_path, '-ar', '16000', '-ac', '1', '-b:a', '32k', compressed_path]
+    # 第一级压缩：提升到 64k 以保持更好的识别质量
+    cmd = ['ffmpeg', '-y', '-i', audio_path, '-ar', '16000', '-ac', '1', '-b:a', '64k', compressed_path]
     try:
         subprocess.run(cmd, capture_output=True, text=True)
         if os.path.getsize(compressed_path) > MAX_SIZE:
+            # 第二级压缩：最后的保底，32k
             final_path = str(Path(audio_path).parent / f"final_{Path(audio_path).name}")
-            cmd = ['ffmpeg', '-y', '-i', compressed_path, '-ar', '8000', '-ac', '1', '-b:a', '16k', final_path]
+            cmd = ['ffmpeg', '-y', '-i', compressed_path, '-ar', '16000', '-ac', '1', '-b:a', '32k', final_path]
             subprocess.run(cmd, capture_output=True)
             return final_path
         return compressed_path
     except Exception as e:
         logging.error(f"Compression error: {e}")
         return audio_path
+
+def get_audio_duration(audio_path):
+    """获取音频时长（秒）"""
+    try:
+        cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', audio_path]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        return float(result.stdout.strip())
+    except Exception as e:
+        logging.error(f"获取音频时长失败: {e}")
+        return 0
+
+def split_audio(audio_path, segment_duration=300):
+    """
+    将音频分割为指定时长的片段（默认 5 分钟）
+    分割时进行转码压缩以确保文件大小受控
+    """
+    duration = get_audio_duration(audio_path)
+    if duration <= segment_duration:
+        # 即便只有一段，如果原文件很大也需要转码（这里交给之前的 compress_audio 处理了，但分段逻辑也保证一下）
+        if os.path.getsize(audio_path) > 25 * 1024 * 1024:
+            return [compress_audio(audio_path)]
+        return [audio_path]
+    
+    output_pattern = str(Path(audio_path).parent / f"chunk_%03d_{Path(audio_path).stem}.mp3")
+    cmd = [
+        'ffmpeg', '-y', '-i', audio_path, 
+        '-f', 'segment', '-segment_time', str(segment_duration), 
+        '-ac', '1', '-ar', '16000', '-b:a', '64k', 
+        output_pattern
+    ]
+    
+    try:
+        subprocess.run(cmd, capture_output=True, check=True)
+        # 获取生成的片段列表
+        chunks = sorted(list(Path(audio_path).parent.glob(f"chunk_*_{Path(audio_path).stem}.mp3")))
+        return [str(c) for c in chunks]
+    except Exception as e:
+        logging.error(f"分割音频失败: {e}")
+        return [audio_path]

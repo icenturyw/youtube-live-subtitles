@@ -7,6 +7,10 @@
     let SERVER_AUTH_KEY = '';
 
     // ============ 全局状态 ============
+    let isProcessing = false;
+    let currentTaskId = null;
+    let lastProgress = { percent: 0, text: '准备中...' };
+    let subtitles = [];
     let isContextInvalidated = false;
 
     // 初始化配置
@@ -80,7 +84,6 @@
     }
 
     // ============ 状态变量 ============
-    let subtitles = [];
     let subtitleContainer = null;
     let sidebarContainer = null;
     let sidebarVisible = false;
@@ -96,8 +99,6 @@
         strokeColor: '#000000'
     };
     let videoElement = null;
-    let isProcessing = false;
-    let currentTaskId = null;
     let activeTranscriptIndex = -1;
 
     // ============ 初始化 ============
@@ -523,7 +524,7 @@
     async function checkWhisperService() {
         try {
             const result = await proxyFetch(`${WHISPER_SERVER}/health`);
-            return result.data && result.data.status === 'ok';
+            return result.data && (result.data.status === 'ok' || result.data.status === 'running');
         } catch (e) {
             console.error('健康检查失败:', e);
             return false;
@@ -595,6 +596,7 @@
 
     // ============ 消息通信 ============
     function sendProgress(percent, text) {
+        lastProgress = { percent: percent, text: text };
         chrome.runtime.sendMessage({
             type: 'progress',
             percent: percent,
@@ -627,7 +629,7 @@
         try {
             const service = genSettings.whisperService || 'local';
 
-            if (service === 'local' || service === 'groq' || service === 'openai') {
+            if (service === 'local' || service === 'groq' || service === 'openai' || service === 'cloudflare') {
                 // 立即更新当前配置 (优先使用弹窗输入的配置，即使未点击保存)
                 if (genSettings.server_host) {
                     WHISPER_SERVER = genSettings.server_host.replace(/\/$/, '');
@@ -677,6 +679,13 @@
 
                 if (result.subtitles && result.subtitles.length > 0) {
                     subtitles = result.subtitles;
+
+                    // 保存到本地存储，这样即使 Popup 关闭了也能持久化
+                    const finalVideoId = videoId || new URLSearchParams(window.location.search).get('v');
+                    if (finalVideoId) {
+                        chrome.storage.local.set({ [`subtitles_${finalVideoId}`]: subtitles });
+                    }
+
                     sendSubtitlesReady(subtitles);
                     createSubtitleContainer();
                     sendProgress(100, `字幕生成完成！共 ${subtitles.length} 条`);
@@ -854,6 +863,15 @@
                     .then(available => sendResponse({ available }))
                     .catch(() => sendResponse({ available: false }));
                 return true;
+
+            case 'getState':
+                sendResponse({
+                    isProcessing: isProcessing,
+                    currentTaskId: currentTaskId,
+                    subtitles: subtitles,
+                    lastProgress: lastProgress // 需要记录最后的进度
+                });
+                break;
 
             default:
                 sendResponse({ success: false, error: 'Unknown action' });
