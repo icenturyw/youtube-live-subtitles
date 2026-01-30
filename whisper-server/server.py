@@ -96,8 +96,26 @@ whisper_model = None
 model_lock = threading.Lock()
 mongo_client = None
 mongo_collection = None
+postgres_db = None
 
 # ============ 工具函数 ============ 
+def init_postgres():
+    """初始化 PostgreSQL 数据库"""
+    global postgres_db
+    try:
+        from db.postgres_db import postgres_db as pg_db
+        postgres_db = pg_db
+        if postgres_db.connect():
+            logging.info("PostgreSQL 数据库初始化成功")
+            return True
+        else:
+            logging.warning("PostgreSQL 连接失败,将使用本地缓存模式")
+            return False
+    except Exception as e:
+        logging.error(f"PostgreSQL 初始化失败: {e}")
+        postgres_db = None
+        return False
+
 def init_mongo():
     global mongo_client, mongo_collection
     if not HAS_MONGO:
@@ -143,7 +161,19 @@ def get_cached_subtitles(video_id):
         except Exception as e:
             logging.error(f"本地缓存读取错误: {e}")
 
-    # 2. 查 MongoDB
+    # 2. 查 PostgreSQL (优先)
+    if postgres_db is not None:
+        try:
+            doc = postgres_db.get_by_video_id(video_id)
+            if doc:
+                logging.info(f"命中 PostgreSQL 云端缓存: {video_id}")
+                # 顺便写回本地，下次就不用查库了
+                save_subtitles_cache(video_id, doc.get('subtitles'), doc.get('language'))
+                return doc
+        except Exception as e:
+            logging.error(f"PostgreSQL 查询错误: {e}")
+    
+    # 3. 查 MongoDB (备用)
     if mongo_collection is not None:
         try:
             doc = mongo_collection.find_one({"video_id": video_id}, {"_id": 0})
@@ -157,10 +187,11 @@ def get_cached_subtitles(video_id):
             
     return None
 
-def save_subtitles_cache(video_id, subtitles, language):
+def save_subtitles_cache(video_id, subtitles, language, target_lang=None):
     data = {
         'video_id': video_id,
         'language': language,
+        'target_lang': target_lang,
         'created_at': datetime.now().isoformat(),
         'subtitles': subtitles
     }
@@ -173,7 +204,15 @@ def save_subtitles_cache(video_id, subtitles, language):
     except Exception as e:
         logging.error(f"本地写入失败: {e}")
 
-    # 2. 保存到 MongoDB
+    # 2. 保存到 PostgreSQL (优先)
+    if postgres_db is not None:
+        try:
+            postgres_db.upsert_subtitles(data)
+            logging.info(f"字幕已上传/同步到 PostgreSQL: {video_id}")
+        except Exception as e:
+            logging.error(f"同步到 PostgreSQL 失败: {e}")
+    
+    # 3. 保存到 MongoDB (备用)
     if mongo_collection is not None:
         try:
             mongo_collection.update_one(
@@ -181,11 +220,12 @@ def save_subtitles_cache(video_id, subtitles, language):
                 {"$set": data},
                 upsert=True
             )
-            logging.info(f"字幕已上传/同步到云端: {video_id}")
+            logging.info(f"字幕已上传/同步到 MongoDB: {video_id}")
         except Exception as e:
-            logging.error(f"同步到云端失败: {e}")
-    else:
-        logging.info(f"MongoDB 未连接，字幕仅保存至本地缓存")
+            logging.error(f"同步到 MongoDB 失败: {e}")
+    
+    if postgres_db is None and mongo_collection is None:
+        logging.info(f"数据库未连接，字幕仅保存至本地缓存")
 
 def update_task(task_id, status, progress, message, subtitles=None, language=None, service=None):
     tasks[task_id] = {
@@ -891,11 +931,52 @@ def sync_local_cache_to_mongo():
                 logging.error(f"同步文件 {video_id} 失败: {e}")
         
         if count > 0:
-            logging.info(f"同步完成，共上传 {count} 条新记录")
+            logging.info(f"同步到 MongoDB 完成，共上传 {count} 条新记录")
         else:
-            logging.info("本地与云端已同步，无需操作")
+            logging.info("本地与 MongoDB 云端已同步，无需操作")
     except Exception as e:
-        logging.error(f"同步过程出错: {e}")
+        logging.error(f"MongoDB 同步过程出错: {e}")
+
+def sync_local_cache_to_postgres():
+    """
+    启动时后台同步：将本地 cache 目录下的所有 json 同步到 PostgreSQL
+    """
+    if postgres_db is None:
+        return
+    
+    logging.info("开始扫描本地缓存并同步到 PostgreSQL 云端...")
+    count = 0
+    try:
+        # 获取云端已有的所有 ID，避免重复查询数据库
+        cloud_ids = set(postgres_db.get_all_video_ids())
+        
+        for file in CACHE_DIR.glob("*.json"):
+            video_id = file.stem
+            try:
+                # 如果云端已存在，则跳过
+                if video_id in cloud_ids:
+                    continue
+                
+                with open(file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # 检查数据格式
+                if not data.get('video_id') or not data.get('subtitles'):
+                    continue
+                
+                if postgres_db.upsert_subtitles(data):
+                    count += 1
+                    if count % 10 == 0:
+                        logging.info(f"已同步 {count} 个文件到 PostgreSQL...")
+            except Exception as e:
+                logging.error(f"同步文件 {video_id} 到 PostgreSQL 失败: {e}")
+        
+        if count > 0:
+            logging.info(f"PostgreSQL 同步完成，共上传 {count} 条新记录")
+        else:
+            logging.info("本地与 PostgreSQL 云端已同步，无需操作")
+    except Exception as e:
+        logging.error(f"PostgreSQL 同步过程出错: {e}")
 
 # ============ HTTP 服务 ============ 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -1131,6 +1212,11 @@ if __name__ == '__main__':
     logging.info(f"服务地址: http://127.0.0.1:{PORT}")
     logging.info(f"当前模型: {MODEL_SIZE} (运行在 {DEVICE})")
     logging.info(f"并发 Worker 数: {MAX_CONCURRENT_TASKS}")
+    
+    # 初始化 PostgreSQL (优先)
+    if init_postgres():
+        # 启动后台线程同步本地缓存到 PostgreSQL
+        threading.Thread(target=sync_local_cache_to_postgres, daemon=True).start()
     
     # 初始化 MongoDB
     if init_mongo():

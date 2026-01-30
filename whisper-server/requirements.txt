@@ -11,3 +11,5 @@ passlib[bcrypt]
 opencc-python-reimplemented
 spacy
 supabase
+yt-dlp
+psycopg2-binary

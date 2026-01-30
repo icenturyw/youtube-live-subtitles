@@ -10,7 +10,9 @@
 - 🤖 **VideoLingo 翻译流水线** - 移植 VideoLingo 核心逻辑，支持“摘要提取 -> 意译校对 -> 润色优化”多级翻译
 - 📏 **行数一致性保证** - 自动校验翻译行数并支持智能重试，解决本地 LLM 合并行的问题
 - ⚡ **异步处理** - 基于队列的后台任务系统，支持播放列表批量转录
-- 📡 **实时性能监控** - 详细的步骤耗时日志，任务状态全程追踪
+- 📡 **实时性能监控** - 详细的步骤耗时日志，任务状态全程追踪，并持久化到 `server.log`
+- 🗄️ **PostgreSQL 云同步** - 使用统一的 PostgreSQL 数据库 (83.229.124.177) 实现多端同步
+- 🔄 **自动补全同步** - 服务启动时自动检测本地 cache 并补全到云端数据库
 - 🛡️ **健壮性增强** - 自动错误重试机制（下载、API 调用），集成 `json-repair` 提升本地模型容错率
 
 ## 系统要求
@@ -107,7 +109,7 @@ DELETE /cache/{video_id}
 
 ## Whisper 模型选择
 
-在 `server.py` 中修改 `MODEL_NAME`:
+在 `main.py` 或 `core/whisper_engine.py` 中修改模型配置。
 
 | 模型 | 大小 | 速度 | 精度 |
 |------|------|------|------|
@@ -140,12 +142,8 @@ A: 首次启动会下载 Whisper 模型（约 150MB），请耐心等待。
 ### Q: 识别不准确？
 A: 尝试使用更大的模型（如 `small` 或 `medium`）。
 
-### Q: Supabase 同步报错 "Could not find the 'target_lang' column"?
-A: 因为新增了二级缓存功能，需要在 Supabase 的 SQL Editor 中执行以下命令添加字段：
-```sql
-ALTER TABLE subtitles ADD COLUMN IF NOT EXISTS target_lang TEXT;
-```
-执行后重启服务即可正常同步。
+### Q: 启动流程是怎样的？
+A: 推荐运行 `python main.py`。启动时系统会自动连接 PostgreSQL 并开启后台线程同步本地 `cache/` 目录下的所有 JSON 文件，确保云端数据是最新的。
 
 ## 许可证
 

@@ -9,11 +9,16 @@
 - **🚀 满血 GPU 加速**：深度适配 `faster-whisper`，支持 CUDA 12.x 自动检测，识别速度提升 5-10 倍。
 - **🧠 LLM 智能纠错**：支持接入本地 LM Studio，自动修正识别过程中的错别字、谐音词，提升字幕质量。
 - **❄️ 翻译效率优化**：智能检测源语言与目标语言，相同时自动跳过翻译步骤，大幅节省 API 费用与时间。
-- **☁️ Supabase 云同步**：摒弃不稳定的 MongoDB，改用 Supabase (Postgres) 实现极速多端字幕共享。
+- **☁️ PostgreSQL 云同步**：完全切换至高性能 PostgreSQL (83.229.124.177) 实现稳健的多端字幕共享。
 - **🎨 增强型 UI**：全新的折叠面板设计，保持界面简洁；新增 LLM 纠错一键开关。
 - **语义化断句**：针对中文优化的语义分割算法，阅读逻辑更清晰。
 
 ## 🔄 最新更新
+
+### v2.3.0 (2026-01-30) - 数据库架构统一 🗄️
+- **PostgreSQL 核心化**：彻底移除 MongoDB 和 Supabase 支持，统一使用 `83.229.124.177` 数据库。
+- **自动增量同步**：服务启动时自动扫描本地 `cache/` 并将缺失数据同步到云端 PostgreSQL。
+- **日志持久化**：FastAPI 后端现在会同步将所有日志保存到 `server.log`，方便追溯。
 
 ### v2.2.3 (2026-01-23) - 云识别进化，打破边界 ☁️
 - **Cloudflare Workers AI (V3-Turbo)**：支持使用 Cloudflare 全球加速网络进行语音识别，采用官方最新的 Base64 JSON 协议，响应极速且高度兼容。
@@ -42,25 +47,26 @@
 
 ### 识别服务 (后端)
 1. 进入 `whisper-server` 目录。
-2. 配置 `.env` 文件（参照示例填入 Supabase 密钥和 LM Studio 地址）。
-3. 运行 `start.bat`。
+2. 配置 `.env` 文件（填入有效的 PostgreSQL `83.229.124.177` 数据库连接信息）。
+3. 运行 `start.bat` (或直接运行 `python main.py`)。
 
 ### 浏览器插件 (前端)
 1. 在开发者模式下加载本项目根目录。
 2. 点击插件图标，配置您的服务器地址和连接密钥。
 
-## ⚠️ Supabase 初始化
-在使用云同步前，请在 Supabase SQL Editor 中运行以下脚本：
+## 🗄️ PostgreSQL 表结构
+在使用云同步前，请确保在数据库中创建以下表：
 ```sql
-create table if not exists subtitles (
-  video_id text primary key,
-  language text,
-  service text,
-  domain text,
-  engine text,
-  subtitles jsonb,
-  created_at timestamptz default now()
+CREATE TABLE IF NOT EXISTS subtitles (
+    id SERIAL PRIMARY KEY,
+    video_id VARCHAR(255) UNIQUE NOT NULL,
+    language VARCHAR(50),
+    target_lang VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    subtitles JSONB NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_video_id ON subtitles(video_id);
 ```
 
 ## 🛠️ 环境要求

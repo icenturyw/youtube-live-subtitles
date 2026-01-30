@@ -12,7 +12,7 @@ from datetime import datetime
 import json_repair
 from core.utils import get_video_id, split_text, compress_audio, get_audio_duration, split_audio, converter, CACHE_DIR, TEMP_DIR, RAW_CACHE_DIR
 from core.whisper_engine import whisper_engine
-from db.supabase_db import supabase_db
+from db.postgres_db import postgres_db
 from core.lexicon import get_prompt_by_domain
 
 # 幻觉黑名单：Whisper 模型在遇到静音或无意义音频时常产生的“幻觉”短语
@@ -272,8 +272,8 @@ class TaskManager:
             with open(cache_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         
-        # 2. 尝试从 Supabase 加载
-        doc = supabase_db.get_by_video_id(video_id)
+        # 2. 尝试从 PostgreSQL 加载
+        doc = postgres_db.get_by_video_id(video_id)
         if doc:
             return doc
             
@@ -294,8 +294,8 @@ class TaskManager:
         with open(CACHE_DIR / f"{video_id}.json", 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
-        # 2. 异步/同步到 Supabase
-        supabase_db.upsert_subtitles(data)
+        # 2. 同步到 PostgreSQL
+        postgres_db.upsert_subtitles(data)
 
     def delete_video_cache(self, video_id):
         """
@@ -330,16 +330,12 @@ class TaskManager:
             deleted_items.append('memory_task')
             logging.info(f"已从内存中删除任务: {video_id}")
         
-        # 4. 从 Supabase 中删除记录
-        if supabase_db.client:
-            try:
-                # 假设表名是 subtitles
-                response = supabase_db.client.table("subtitles").delete().eq("video_id", video_id).execute()
-                if response.data:
-                    deleted_items.append('supabase_record')
-                    logging.info(f"已从 Supabase 删除记录: {video_id}")
-            except Exception as e:
-                logging.error(f"从 Supabase 删除记录失败: {e}")
+        # 4. 从 PostgreSQL 中删除记录
+        try:
+            if postgres_db.delete_by_video_id(video_id):
+                deleted_items.append('postgres_record')
+        except Exception as e:
+            logging.error(f"从 PostgreSQL 删除记录失败: {e}")
         
         return {
             'video_id': video_id,
@@ -1091,5 +1087,40 @@ class TaskManager:
             corrected_subtitles.extend(batch)
             
         return corrected_subtitles
+    def sync_local_cache_to_postgres(self):
+        """
+        启动时后台同步：将本地 cache 目录下的所有 json 同步到 PostgreSQL
+        """
+        logging.info("开始扫描本地缓存并同步到 PostgreSQL 云端...")
+        count = 0
+        try:
+            # 获取云端已有的所有 ID
+            cloud_ids = set(postgres_db.get_all_video_ids())
+            
+            for file in CACHE_DIR.glob("*.json"):
+                video_id = file.stem
+                try:
+                    if video_id in cloud_ids:
+                        continue
+                    
+                    with open(file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    
+                    if not data.get('video_id') or not data.get('subtitles'):
+                        continue
+                    
+                    if postgres_db.upsert_subtitles(data):
+                        count += 1
+                        if count % 10 == 0:
+                            logging.info(f"已同步 {count} 个文件到 PostgreSQL...")
+                except Exception as e:
+                    logging.error(f"同步文件 {video_id} 到 PostgreSQL 失败: {e}")
+            
+            if count > 0:
+                logging.info(f"PostgreSQL 同步完成，共上传 {count} 条新记录")
+            else:
+                logging.info("本地与 PostgreSQL 云端已同步")
+        except Exception as e:
+            logging.error(f"PostgreSQL 同步过程出错: {e}")
 
 task_manager = TaskManager()
