@@ -54,13 +54,21 @@ class WhisperEngine:
 
     def transcribe(self, audio_path, language=None, initial_prompt=None):
         model = self.get_model()
+        
+        # 针对背景音较重的环境，增加 beam_size 可以显著提升准确率
+        # 默认 beam_size=5 是准确率与速度的平衡点
         segments, info = model.transcribe(
             audio_path,
             language=language if language and language != 'auto' else None,
-            beam_size=1,
+            beam_size=5,
+            # 强化 VAD 过滤，防止将背景音乐识别为重复的文字（幻觉）
             vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
-            initial_prompt=initial_prompt or "以下是普通话的句子，请用简体中文。",
+            vad_parameters=dict(
+                min_silence_duration_ms=500,
+                threshold=0.5,             # 修正参数名：从 speech_threshold 改为 threshold
+                min_speech_duration_ms=250 # 过滤极短的杂音
+            ),
+            initial_prompt=initial_prompt or "以下是普通话的句子，请用简体中文。如果是歌曲，请准确识别歌词。",
             word_timestamps=True
         )
         return segments, info

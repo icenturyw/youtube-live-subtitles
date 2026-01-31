@@ -238,7 +238,7 @@ def split_audio(audio_path, segment_duration=300):
     """
     duration = get_audio_duration(audio_path)
     if duration <= segment_duration:
-        # 即便只有一段，如果原文件很大也需要转码（这里交给之前的 compress_audio 处理了，但分段逻辑也保证一下）
+        # 即便只有一段，如果原文件很大也需要转码
         if os.path.getsize(audio_path) > 25 * 1024 * 1024:
             return [compress_audio(audio_path)]
         return [audio_path]
@@ -259,3 +259,34 @@ def split_audio(audio_path, segment_duration=300):
     except Exception as e:
         logging.error(f"分割音频失败: {e}")
         return [audio_path]
+
+def enhance_audio_for_speech(audio_path):
+    """
+    使用 ffmpeg 增强人声并抑制背景噪音/伴奏
+    适用于背景音乐较强的场景
+    """
+    # 如果文件已经处理过，直接返回
+    if "enhanced_" in audio_path:
+        return audio_path
+        
+    enhanced_path = str(Path(audio_path).parent / f"enhanced_{Path(audio_path).name}")
+    
+    # 组合滤镜说明：
+    # highpass=f=200: 移除 200Hz 以下的低频伴奏（如鼓点、贝斯）
+    # lowpass=f=3500: 移除 3500Hz 以上的高频杂音（如镲片、高频底噪）
+    # afftdn: FFT 采样降噪
+    # loudnorm: 响度标准化，确保音量适中
+    cmd = [
+        'ffmpeg', '-y', '-i', audio_path, 
+        '-af', 'highpass=f=200,lowpass=f=3500,afftdn,loudnorm', 
+        '-ar', '16000', # 采样率设为 ASR 偏好的 16k
+        enhanced_path
+    ]
+    
+    try:
+        logging.info(f"正在进行人声增强预处理: {audio_path}")
+        subprocess.run(cmd, capture_output=True, check=True)
+        return enhanced_path
+    except Exception as e:
+        logging.error(f"人声增强失败: {e}")
+        return audio_path

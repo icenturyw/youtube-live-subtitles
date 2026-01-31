@@ -10,7 +10,10 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 import json_repair
-from core.utils import get_video_id, split_text, compress_audio, get_audio_duration, split_audio, converter, CACHE_DIR, TEMP_DIR, RAW_CACHE_DIR
+from core.utils import (
+    get_video_id, split_text, compress_audio, get_audio_duration, 
+    split_audio, enhance_audio_for_speech, converter, CACHE_DIR, TEMP_DIR, RAW_CACHE_DIR
+)
 from core.whisper_engine import whisper_engine
 from db.postgres_db import postgres_db
 from core.lexicon import get_prompt_by_domain
@@ -186,6 +189,11 @@ class TaskManager:
                 
                 # Transcription Stage
                 logging.info(f"[Task {task_id}] 开始识别阶段, 模式: {service}, 引擎: {engine_type}")
+                
+                # [NEW] 音频预处理：如果是音乐或背景音复杂，进行人声增强
+                if domain == 'music':
+                    self.update_task(task_id, 'transcribing', 25, '正在进行人声增强预处理（降低背景音乐干扰）...')
+                    audio_path = enhance_audio_for_speech(audio_path)
                 if service == 'local':
                     if engine_type == 'sensevoice':
                         from core.sensevoice_engine import sensevoice_engine
@@ -197,6 +205,11 @@ class TaskManager:
                         logging.info(f"[Task {task_id}] 使用本地 Whisper 识别 (Prompt: {domain})")
                         self.update_task(task_id, 'transcribing', 30, '正在使用 Whisper 识别...')
                         subtitles, detected_lang = self._transcribe_locally(audio_path, task_id, language, initial_prompt=initial_prompt)
+                elif service == 'qwen3-asr':
+                    from core.qwen3_asr_engine import qwen3_asr_engine
+                    logging.info(f"[Task {task_id}] 使用 Qwen3-ASR API 识别")
+                    self.update_task(task_id, 'transcribing', 30, '正在使用 Qwen3-ASR 识别...')
+                    subtitles, detected_lang = qwen3_asr_engine.transcribe(audio_path, language)
                 elif service == 'cloudflare':
                     logging.info(f"[Task {task_id}] 使用 Cloudflare Workers AI 识别")
                     subtitles, detected_lang = self._transcribe_via_cloudflare(audio_path, task_id, language)
