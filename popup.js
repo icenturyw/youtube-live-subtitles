@@ -87,7 +87,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             apiKeyInput.placeholder = 'sk_...';
         }
 
-        if (service === 'local' || service === 'cloudflare') {
+        // 处理引擎选择器的显示状态
+        const engineSetting = engineSelect.closest('.setting-item');
+        if (service === 'qwen3-asr') {
+            // Qwen3-ASR 是独立服务，禁用本地引擎选择
+            engineSetting.style.opacity = '0.5';
+            engineSetting.style.pointerEvents = 'none';
+            engineSelect.value = 'whisper'; // 重置为默认值（不影响实际调用）
+        } else if (service === 'local') {
+            // 本地服务启用引擎选择
+            engineSetting.style.opacity = '1';
+            engineSetting.style.pointerEvents = 'auto';
+        } else {
+            // 其他云端服务也禁用引擎选择
+            engineSetting.style.opacity = '0.5';
+            engineSetting.style.pointerEvents = 'none';
+        }
+
+        if (service === 'local' || service === 'cloudflare' || service === 'qwen3-asr') {
             serverHostSetting.style.display = 'block';
             authKeySetting.style.display = 'block';
             await checkService();
@@ -113,7 +130,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         // 检查本地服务
-        if (whisperServiceSelect.value === 'local' || whisperServiceSelect.value === 'cloudflare') {
+        if (whisperServiceSelect.value === 'local' || whisperServiceSelect.value === 'cloudflare' || whisperServiceSelect.value === 'qwen3-asr') {
             const available = await checkServiceAvailable(tab.id);
             if (!available) {
                 showError('本地 Whisper 服务未运行！请先启动 whisper-server/start.bat');
@@ -443,6 +460,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else if (settings.whisperService === 'openai') {
                 apiKeyLabel.textContent = 'OpenAI API Key';
                 apiKeyInput.placeholder = 'sk_...';
+            }
+
+            // 初始化引擎选择器状态
+            const engineSetting = engineSelect.closest('.setting-item');
+            if (settings.whisperService === 'local') {
+                engineSetting.style.opacity = '1';
+                engineSetting.style.pointerEvents = 'auto';
+            } else {
+                engineSetting.style.opacity = '0.5';
+                engineSetting.style.pointerEvents = 'none';
             }
         }
         if (settings.apiKey) apiKeyInput.value = settings.apiKey;

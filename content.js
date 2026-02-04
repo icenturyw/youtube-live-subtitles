@@ -629,7 +629,7 @@
         try {
             const service = genSettings.whisperService || 'local';
 
-            if (service === 'local' || service === 'groq' || service === 'openai' || service === 'cloudflare') {
+            if (service === 'local' || service === 'groq' || service === 'openai' || service === 'cloudflare' || service === 'qwen3-asr') {
                 // 立即更新当前配置 (优先使用弹窗输入的配置，即使未点击保存)
                 if (genSettings.server_host) {
                     WHISPER_SERVER = genSettings.server_host.replace(/\/$/, '');
