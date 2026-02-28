@@ -161,12 +161,18 @@ class PostgresDB:
             
         except Exception as e:
             if conn:
-                conn.rollback()
-            logging.error(f"PostgreSQL 同步失败 ({data.get('video_id')}): {e}")
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            logging.error(f"PostgreSQL 同步失败 ({data.get('video_id', 'unknown')}): {e}")
             return False
         finally:
             if conn:
-                self.connection_pool.putconn(conn)
+                try:
+                    self.connection_pool.putconn(conn)
+                except Exception as e:
+                    logging.error(f"PostgreSQL 返回连接池出错: {e}")
     
     def get_all_video_ids(self):
         """获取所有 video_id (用于迁移)"""

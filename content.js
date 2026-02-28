@@ -557,12 +557,106 @@
     }
 
     async function pollTaskStatus(taskId) {
-        // 直接使用轮询方式（SSE 无法通过消息代理）
-        return await fallbackPolling(taskId);
+        return new Promise((resolve, reject) => {
+            if (isContextInvalidated) {
+                return reject(new Error('Extension context invalidated'));
+            }
+
+            console.log('[SSE] 尝试建立流式连接...');
+            const port = chrome.runtime.connect({ name: 'proxyStream' });
+            let lastSubtitleCount = 0;
+            let buffer = '';
+            let isConnected = false;
+            let resolved = false;
+
+            const fallback = () => {
+                if (resolved) return;
+                console.log('[SSE] 连接中断或失败，回退到普通轮询');
+                fallbackPolling(taskId).then(resolve).catch(reject);
+                resolved = true;
+            };
+
+            port.onMessage.addListener((msg) => {
+                if (resolved) return;
+
+                if (msg.type === 'connected') {
+                    isConnected = true;
+                    console.log('[SSE] 流式连接已建立');
+                } else if (msg.type === 'chunk') {
+                    buffer += msg.chunk;
+                    
+                    const lines = buffer.split('\n\n');
+                    buffer = lines.pop(); // 最后一部分可能不完整
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const dataStr = line.substring(6).trim();
+                            if (!dataStr) continue;
+
+                            try {
+                                const data = JSON.parse(dataStr);
+                                
+                                if (data.status === 'error') {
+                                    port.disconnect();
+                                    reject(new Error(data.message));
+                                    resolved = true;
+                                    return;
+                                }
+
+                                sendProgress(data.progress, data.message);
+
+                                if (data.status === 'transcribing' && data.subtitles && data.subtitles.length > lastSubtitleCount) {
+                                    console.log(`[流式识别] 收到增量字幕: ${lastSubtitleCount} → ${data.subtitles.length} 条`);
+                                    subtitles = data.subtitles;
+                                    lastSubtitleCount = data.subtitles.length;
+
+                                    if (!subtitleContainer) {
+                                        createSubtitleContainer();
+                                    }
+                                    sendSubtitlesReady(subtitles);
+                                    renderTranscript();
+                                    sendProgress(data.progress, `${data.message} (已可预览 ${subtitles.length} 条)`);
+                                }
+
+                                if (data.status === 'completed') {
+                                    port.disconnect();
+                                    resolve(data);
+                                    resolved = true;
+                                    return;
+                                }
+
+                            } catch (e) {
+                                console.error('[SSE] JSON 解析错误:', e, 'Data:', dataStr);
+                            }
+                        }
+                    }
+                } else if (msg.type === 'end') {
+                    fallback();
+                } else if (msg.type === 'error') {
+                    console.error('[SSE] 代理连接错误:', msg.error);
+                    fallback();
+                }
+            });
+
+            port.onDisconnect.addListener(() => {
+                if (!resolved) {
+                    if (chrome.runtime.lastError) {
+                        console.warn('[SSE] 端口断开:', chrome.runtime.lastError.message);
+                    }
+                    fallback();
+                }
+            });
+
+            const options = {
+                headers: SERVER_AUTH_KEY ? { 'X-API-Key': SERVER_AUTH_KEY } : {}
+            };
+            port.postMessage({ action: 'start', url: `/task/${taskId}/stream`, options });
+        });
     }
 
     async function fallbackPolling(taskId) {
         const maxAttempts = 3600;  // 最多等待 30 分钟 (1800 秒)
+        let lastSubtitleCount = 0; // 追踪已显示的字幕数量
 
         for (let i = 0; i < maxAttempts; i++) {
             if (isContextInvalidated) {
@@ -576,6 +670,26 @@
                 const data = result.data;
 
                 sendProgress(data.progress, data.message);
+
+                // [流式识别] 识别进行中但已有部分字幕 → 增量显示
+                if (data.status === 'transcribing' && data.subtitles && data.subtitles.length > lastSubtitleCount) {
+                    console.log(`[流式识别] 收到增量字幕: ${lastSubtitleCount} → ${data.subtitles.length} 条`);
+                    subtitles = data.subtitles;
+                    lastSubtitleCount = data.subtitles.length;
+
+                    // 首次收到字幕时创建字幕容器
+                    if (!subtitleContainer) {
+                        createSubtitleContainer();
+                    }
+
+                    // 通知 popup 更新状态
+                    sendSubtitlesReady(subtitles);
+
+                    // 更新侧边栏内容
+                    renderTranscript();
+
+                    sendProgress(data.progress, `${data.message} (已可预览 ${subtitles.length} 条)`);
+                }
 
                 if (data.status === 'completed') {
                     return data;

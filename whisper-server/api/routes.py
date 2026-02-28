@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Header, HTTPException, Depends
+from fastapi import APIRouter, Header, HTTPException, Depends, File, UploadFile, Form
+from fastapi.responses import StreamingResponse, FileResponse
+import asyncio
 from typing import Optional
 import uuid
 import os
@@ -130,6 +132,45 @@ async def get_task_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
+@router.get("/task/{task_id}/stream")
+async def stream_task_status(task_id: str):
+    import json
+    
+    async def event_generator():
+        last_updated_at = 0
+        last_progress = -1
+        last_subtitles_count = 0
+        status_completed = False
+        
+        while not status_completed:
+            task = task_manager.get_task(task_id)
+            if not task:
+                yield f"data: {json.dumps({'status': 'error', 'message': 'Task not found'})}\n\n"
+                break
+                
+            current_updated_at = task.get('updated_at', 0)
+            current_progress = task.get('progress', 0)
+            current_subtitles_count = len(task.get('subtitles') or [])
+            
+            # 只有当状态更新或进度变化或字幕数变化时才推送
+            if (current_updated_at > last_updated_at or 
+                current_progress != last_progress or 
+                current_subtitles_count != last_subtitles_count):
+                
+                yield f"data: {json.dumps(task)}\n\n"
+                
+                last_updated_at = current_updated_at
+                last_progress = current_progress
+                last_subtitles_count = current_subtitles_count
+                
+                if task.get('status') in ['completed', 'error']:
+                    status_completed = True
+            
+            if not status_completed:
+                await asyncio.sleep(0.5)
+                
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
 @router.get("/status/{video_id}")
 async def get_video_status(video_id: str):
     # 检查任务是否在内存中或缓存中
@@ -189,3 +230,145 @@ async def delete_cache(video_id: str, auth: str = Depends(verify_api_key)):
             status_code=404, 
             detail=f"未找到视频 {video_id} 的任何缓存数据"
         )
+
+# ============ 术语词典管理 ============
+
+from core.lexicon import get_all_lexicon, load_custom_lexicon, save_custom_lexicon
+from pydantic import BaseModel
+
+class LexiconUpdateRequest(BaseModel):
+    domain: str
+    label: str = ""
+    terms: str = ""
+    replacements: dict = {}
+
+@router.get("/lexicon")
+async def get_lexicon():
+    """获取所有词典（内置 + 自定义）"""
+    return get_all_lexicon()
+
+@router.post("/lexicon")
+async def update_lexicon(request: LexiconUpdateRequest, auth: str = Depends(verify_api_key)):
+    """添加或更新自定义领域词典"""
+    import logging
+    custom = load_custom_lexicon()
+    custom[request.domain] = {
+        "label": request.label or request.domain,
+        "terms": request.terms,
+        "replacements": request.replacements
+    }
+    if save_custom_lexicon(custom):
+        logging.info(f"[Lexicon] 已更新自定义词典: {request.domain}")
+        return {"message": f"词典 '{request.domain}' 已保存", "domain": request.domain}
+    raise HTTPException(status_code=500, detail="保存词典失败")
+
+@router.delete("/lexicon/{domain}")
+async def delete_lexicon(domain: str, auth: str = Depends(verify_api_key)):
+    """删除自定义领域词典（内置词典不可删除）"""
+    from core.lexicon import BUILTIN_LEXICON
+    if domain in BUILTIN_LEXICON:
+        raise HTTPException(status_code=400, detail=f"内置词典 '{domain}' 不可删除")
+    
+    custom = load_custom_lexicon()
+    if domain not in custom:
+        raise HTTPException(status_code=404, detail=f"自定义词典 '{domain}' 不存在")
+    
+    del custom[domain]
+    save_custom_lexicon(custom)
+    return {"message": f"词典 '{domain}' 已删除"}
+
+# ============ 视频下载功能 ============
+
+from models.models import VideoDownloadRequest
+from fastapi.responses import FileResponse
+import subprocess
+import asyncio
+from pathlib import Path
+
+TEMP_DIR = Path(os.path.join(os.path.dirname(__file__), '..', 'temp')).resolve()
+
+@router.post("/download_video")
+async def download_video(request: VideoDownloadRequest, auth: str = Depends(verify_api_key)):
+    """
+    使用 yt-dlp 下载指定分辨率的 YouTube 视频，返回下载文件名
+    """
+    import logging
+    video_url = request.video_url
+    resolution = request.resolution  # 720, 1080, 1440, 2160
+    
+    video_id = get_video_id(video_url)
+    if not video_id:
+        raise HTTPException(status_code=400, detail="无效的视频 URL")
+    
+    logging.info(f"[Download] 收到视频下载请求: {video_id}, 分辨率: {resolution}p")
+    
+    # 检查是否已有下载好的视频文件
+    for ext in ['mp4', 'mkv', 'webm']:
+        existing = TEMP_DIR / f"{video_id}_{resolution}p.{ext}"
+        if existing.exists() and existing.stat().st_size > 0:
+            logging.info(f"[Download] 视频文件已存在: {existing.name}")
+            return {"filename": existing.name, "status": "ready"}
+    
+    output_template = str(TEMP_DIR / f"{video_id}_{resolution}p.%(ext)s")
+    
+    # yt-dlp 命令：下载指定分辨率的视频+音频合并为 mp4
+    cmd = [
+        'yt-dlp',
+        '-f', f'bestvideo[height<={resolution}]+bestaudio/best[height<={resolution}]',
+        '--merge-output-format', 'mp4',
+        '--no-playlist',
+        '--no-part',
+        '--force-overwrites',
+        '--no-cache-dir',
+        '-o', output_template,
+        video_url
+    ]
+    
+    try:
+        # 在线程池中执行以避免阻塞
+        result = await asyncio.to_thread(
+            subprocess.run, cmd, capture_output=True, text=True, timeout=1800, 
+            encoding='utf-8', errors='ignore'
+        )
+        
+        if result.returncode != 0:
+            stderr_msg = result.stderr.strip() if result.stderr else "未知错误"
+            logging.error(f"[Download] yt-dlp 下载失败: {stderr_msg[:300]}")
+            raise HTTPException(status_code=500, detail=f"视频下载失败: {stderr_msg[:200]}")
+        
+        # 查找下载好的文件
+        for ext in ['mp4', 'mkv', 'webm']:
+            downloaded = TEMP_DIR / f"{video_id}_{resolution}p.{ext}"
+            if downloaded.exists() and downloaded.stat().st_size > 0:
+                logging.info(f"[Download] 视频下载完成: {downloaded.name}, 大小: {downloaded.stat().st_size / 1024 / 1024:.2f} MB")
+                return {"filename": downloaded.name, "status": "ready"}
+        
+        raise HTTPException(status_code=500, detail="下载完成但未找到视频文件")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="视频下载超时（超过 30 分钟）")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"[Download] 下载异常: {e}")
+        raise HTTPException(status_code=500, detail=f"下载错误: {str(e)}")
+
+@router.get("/download_file/{filename}")
+async def download_file(filename: str):
+    """
+    提供已下载视频文件的下载流
+    """
+    import logging
+    # 安全性检查：防止路径遍历
+    if '..' in filename or '/' in filename or '\\' in filename:
+        raise HTTPException(status_code=400, detail="无效的文件名")
+    
+    file_path = TEMP_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    
+    logging.info(f"[Download] 提供文件下载: {filename}")
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type="video/mp4"
+    )

@@ -20,6 +20,70 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
 });
 
+// 监听长连接以支持 SSE 流式代理
+chrome.runtime.onConnect.addListener(port => {
+    if (port.name === 'proxyStream') {
+        let abortController = null;
+
+        port.onMessage.addListener(async (msg) => {
+            if (msg.action === 'start') {
+                const { url, options } = msg;
+                const settings = await chrome.storage.local.get(['serverHost']);
+                const WHISPER_SERVER = settings.serverHost || 'http://127.0.0.1:8765';
+                const fullUrl = url.startsWith('http') ? url : `${WHISPER_SERVER.replace(/\/$/, '')}${url.startsWith('/') ? '' : '/'}${url}`;
+
+                abortController = new AbortController();
+                const fetchOptions = {
+                    ...options,
+                    signal: abortController.signal
+                };
+
+                try {
+                    const response = await fetch(fullUrl, fetchOptions);
+
+                    if (!response.ok) {
+                        port.postMessage({ type: 'error', error: `HTTP ${response.status}: ${response.statusText}` });
+                        port.disconnect();
+                        return;
+                    }
+
+                    port.postMessage({ type: 'connected' });
+
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) {
+                            port.postMessage({ type: 'end' });
+                            break;
+                        }
+
+                        const chunk = decoder.decode(value, { stream: true });
+                        port.postMessage({ type: 'chunk', chunk });
+                    }
+                } catch (error) {
+                    if (error.name !== 'AbortError') {
+                        port.postMessage({ type: 'error', error: error.message });
+                    }
+                } finally {
+                    port.disconnect();
+                }
+            } else if (msg.action === 'abort') {
+                if (abortController) {
+                    abortController.abort();
+                }
+            }
+        });
+
+        port.onDisconnect.addListener(() => {
+            if (abortController) {
+                abortController.abort();
+            }
+        });
+    }
+});
+
 // 监听来自 content script 和 popup 的消息
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // 代理请求到本地 Whisper 服务
@@ -28,6 +92,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             .then(result => sendResponse(result))
             .catch(err => sendResponse({ error: err.message }));
         return true; // 保持消息通道开放
+    }
+
+    // 视频下载：使用 chrome.downloads API
+    if (message.type === 'downloadVideo') {
+        const { downloadUrl, filename } = message;
+        chrome.downloads.download({
+            url: downloadUrl,
+            filename: filename,
+            saveAs: true
+        }, (downloadId) => {
+            if (chrome.runtime.lastError) {
+                sendResponse({ error: chrome.runtime.lastError.message });
+            } else {
+                sendResponse({ success: true, downloadId });
+            }
+        });
+        return true;
     }
 
     if (message.type === 'status') {

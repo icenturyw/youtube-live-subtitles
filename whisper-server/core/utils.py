@@ -234,8 +234,9 @@ def get_audio_duration(audio_path):
 def split_audio(audio_path, segment_duration=300):
     """
     将音频分割为指定时长的片段（默认 5 分钟）
-    分割时进行转码压缩以确保文件大小受控
+    分割时进行转码压缩以确保文件大小受控，并通过并发安全命名避免重试发生文件覆盖
     """
+    import uuid
     duration = get_audio_duration(audio_path)
     if duration <= segment_duration:
         # 即便只有一段，如果原文件很大也需要转码
@@ -243,7 +244,9 @@ def split_audio(audio_path, segment_duration=300):
             return [compress_audio(audio_path)]
         return [audio_path]
     
-    output_pattern = str(Path(audio_path).parent / f"chunk_%03d_{Path(audio_path).stem}.mp3")
+    # 加入并发安全前缀
+    safe_prefix = uuid.uuid4().hex[:6]
+    output_pattern = str(Path(audio_path).parent / f"chunk_{safe_prefix}_%03d_{Path(audio_path).stem}.mp3")
     cmd = [
         'ffmpeg', '-y', '-i', audio_path, 
         '-f', 'segment', '-segment_time', str(segment_duration), 
@@ -253,8 +256,8 @@ def split_audio(audio_path, segment_duration=300):
     
     try:
         subprocess.run(cmd, capture_output=True, check=True)
-        # 获取生成的片段列表
-        chunks = sorted(list(Path(audio_path).parent.glob(f"chunk_*_{Path(audio_path).stem}.mp3")))
+        # 获取生成的片段列表，必须加上 safe_prefix 的特征码匹配
+        chunks = sorted(list(Path(audio_path).parent.glob(f"chunk_{safe_prefix}_*_{Path(audio_path).stem}.mp3")))
         return [str(c) for c in chunks]
     except Exception as e:
         logging.error(f"分割音频失败: {e}")

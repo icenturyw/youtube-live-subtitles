@@ -25,3 +25,8 @@ whisper-server/temp/
 Thumbs.db
 
 VideoLingo_Reference/
+
+# Video Downloads
+downloads/
+*.mkv
+*.mp4

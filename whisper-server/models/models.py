@@ -35,3 +35,7 @@ class PlaylistRequest(BaseModel):
     domain: str = "general"
     engine: str = "whisper" # 默认使用 whisper
     llm_correction: bool = False  # LLM 纠错开关
+
+class VideoDownloadRequest(BaseModel):
+    video_url: str
+    resolution: str = "1080"  # 默认 1080p，可选 720/1080/1440/2160

@@ -40,6 +40,10 @@ class TaskManager:
         self.max_concurrent = 1
         self.worker_thread = threading.Thread(target=self._worker, daemon=True)
         self.worker_thread.start()
+        
+        # 启动清理死任务/过期内存缓存的守护进程
+        self.cleanup_thread = threading.Thread(target=self._cleanup_worker, daemon=True)
+        self.cleanup_thread.start()
 
     def update_task(self, task_id, status, progress, message, subtitles=None, language=None):
         self.tasks[task_id] = {
@@ -48,9 +52,10 @@ class TaskManager:
             'progress': progress,
             'message': message,
             'subtitles': subtitles,
-            'detected_language': language,
-            'updated_at': time.time()
+            'language': language,
+            'updated_at': time.time(),
         }
+        logging.info(f"Task {task_id} status updated to {status}: {message} (Progress: {progress}%)")
 
     def get_task(self, task_id):
         return self.tasks.get(task_id)
@@ -93,7 +98,8 @@ class TaskManager:
             'status': 'pending',
             'progress': 0,
             'message': '等待队列处理...',
-            'subtitles': []
+            'subtitles': [],
+            'updated_at': time.time() # Added this line
         })
         # Store video_id for lookup
         if 'video_url' in task_data:
@@ -184,38 +190,37 @@ class TaskManager:
                 subtitles = raw_cached.get('subtitles')
                 detected_lang = raw_cached.get('language')
             else:
-                # Download Audio
-                audio_path = self._download_audio(video_url, task_id)
-                
                 # Transcription Stage
                 logging.info(f"[Task {task_id}] 开始识别阶段, 模式: {service}, 引擎: {engine_type}")
                 
-                # [NEW] 音频预处理：如果是音乐或背景音复杂，进行人声增强
-                if domain == 'music':
-                    self.update_task(task_id, 'transcribing', 25, '正在进行人声增强预处理（降低背景音乐干扰）...')
-                    audio_path = enhance_audio_for_speech(audio_path)
-                if service == 'local':
-                    if engine_type == 'sensevoice':
+                # [流式识别] 本地 Whisper 引擎 + 长视频 → 边下载边识别
+                if service == 'local' and engine_type != 'sensevoice':
+                    subtitles, detected_lang = self._streaming_download_and_transcribe(
+                        video_url, video_id, task_id, language, initial_prompt, domain)
+                else:
+                    # 其他服务/引擎：完整下载后再识别
+                    audio_path = self._download_audio(video_url, task_id)
+                    
+                    if domain == 'music':
+                        self.update_task(task_id, 'transcribing', 25, '正在进行人声增强预处理（降低背景音乐干扰）...')
+                        audio_path = enhance_audio_for_speech(audio_path)
+                    if service == 'local':  # sensevoice
                         from core.sensevoice_engine import sensevoice_engine
                         logging.info(f"[Task {task_id}] 使用 SenseVoice 识别 (Prompt: {domain})")
                         self.update_task(task_id, 'transcribing', 30, '正在使用 SenseVoice 识别...')
                         subtitles = sensevoice_engine.transcribe(audio_path, language)
                         detected_lang = language 
+                    elif service == 'qwen3-asr':
+                        from core.qwen3_asr_engine import qwen3_asr_engine
+                        logging.info(f"[Task {task_id}] 使用 Qwen3-ASR API 识别")
+                        self.update_task(task_id, 'transcribing', 30, '正在使用 Qwen3-ASR 识别...')
+                        subtitles, detected_lang = qwen3_asr_engine.transcribe(audio_path, language)
+                    elif service == 'cloudflare':
+                        logging.info(f"[Task {task_id}] 使用 Cloudflare Workers AI 识别")
+                        subtitles, detected_lang = self._transcribe_via_cloudflare(audio_path, task_id, language)
                     else:
-                        logging.info(f"[Task {task_id}] 使用本地 Whisper 识别 (Prompt: {domain})")
-                        self.update_task(task_id, 'transcribing', 30, '正在使用 Whisper 识别...')
-                        subtitles, detected_lang = self._transcribe_locally(audio_path, task_id, language, initial_prompt=initial_prompt)
-                elif service == 'qwen3-asr':
-                    from core.qwen3_asr_engine import qwen3_asr_engine
-                    logging.info(f"[Task {task_id}] 使用 Qwen3-ASR API 识别")
-                    self.update_task(task_id, 'transcribing', 30, '正在使用 Qwen3-ASR 识别...')
-                    subtitles, detected_lang = qwen3_asr_engine.transcribe(audio_path, language)
-                elif service == 'cloudflare':
-                    logging.info(f"[Task {task_id}] 使用 Cloudflare Workers AI 识别")
-                    subtitles, detected_lang = self._transcribe_via_cloudflare(audio_path, task_id, language)
-                else:
-                    logging.info(f"[Task {task_id}] 使用 {service.upper()} API 识别 (Prompt: {domain})")
-                    subtitles, detected_lang = self._transcribe_via_api(audio_path, task_id, language, api_key, service, initial_prompt=initial_prompt)
+                        logging.info(f"[Task {task_id}] 使用 {service.upper()} API 识别 (Prompt: {domain})")
+                        subtitles, detected_lang = self._transcribe_via_api(audio_path, task_id, language, api_key, service, initial_prompt=initial_prompt)
                 
                 # 保存原始识别结果
                 self._save_raw_cache(video_id, subtitles, detected_lang, domain, engine_type)
@@ -226,6 +231,11 @@ class TaskManager:
         if llm_correction_enabled and os.environ.get('LM_STUDIO_API_URL'):
             self.update_task(task_id, 'transcribing', 70, '正在使用 LM Studio 修正文本...')
             subtitles = self._correct_transcription(subtitles, detected_lang)
+
+        # [NEW] 应用术语词典替换规则
+        if subtitles and domain:
+            from core.lexicon import apply_term_replacements
+            subtitles = apply_term_replacements(subtitles, domain)
 
         if target_lang and subtitles:
             trans_start = time.time()
@@ -255,6 +265,32 @@ class TaskManager:
             self.tasks[task_id]['domain'] = domain
             self.tasks[task_id]['service'] = service
             self.tasks[task_id]['engine'] = engine_type
+
+    def _cleanup_worker(self):
+        """定期清理在内存中停留时间过长的已完成/失败任务记录以释放内存"""
+        logging.info("TaskManager 内存清理守护进程启动")
+        while True:
+            time.sleep(600)  # 每 10 分钟检查一次
+            try:
+                now = time.time()
+                to_delete = []
+                for tid, task_info in self.tasks.items():
+                    # 这个任务上次更新到现在过了多久
+                    age = now - task_info.get('updated_at', now)
+                    # 如果任务处于已完成或者失败且驻留超过了 10 分钟
+                    if task_info.get('status') in ['completed', 'error'] and age > 600:
+                        to_delete.append(tid)
+                
+                for tid in to_delete:
+                    # 我们不要完全删除，而是将其庞大的字幕列表和冗余元数据置空
+                    # 前端轮询 get_task_status 发现被清空时会知道需要转查数据库
+                    logging.info(f"清理过期任务缓存释放物理内存: {tid}")
+                    self.tasks[tid]['subtitles'] = None
+                    # 删除以防止越攒越多
+                    del self.tasks[tid]
+                    
+            except Exception as e:
+                logging.error(f"TaskManager 内存清理出错: {e}")
 
     def _get_raw_cache(self, video_id):
         raw_cache_file = RAW_CACHE_DIR / f"{video_id}.json"
@@ -317,7 +353,31 @@ class TaskManager:
         """
         deleted_items = []
         
-        # 1. 删除本地最终 JSON 缓存文件
+        # 1. 尝试从数据库中删除
+        try:
+            from db.postgres_db import postgres_db
+            if postgres_db.delete_by_video_id(video_id):
+                deleted_items.append('postgres_record')
+                logging.info(f"删除 {video_id} 的数据库缓存成功")
+        except Exception as e:
+            logging.error(f"删除数据库缓存失败: {e}")
+            
+        # 1.5 从内存 tasks 字典中删除
+        try:
+            keys_to_delete = []
+            for tid, tinfo in self.tasks.items():
+                # Check if task_id matches or if video_id in task_info matches
+                if tid == video_id or tinfo.get('video_id') == video_id:
+                    keys_to_delete.append(tid)
+            for k in keys_to_delete:
+                del self.tasks[k]
+                deleted_items.append(f'memory_task_{k}')
+                logging.info(f"同时清理内存缓存 TaskID: {k}")
+        except Exception as e:
+            logging.error(f"从内存中删除任务失败: {e}")
+
+        # 2. 清除文件系统中的缓存
+        # 2.1 删除本地最终 JSON 缓存文件
         cache_file = CACHE_DIR / f"{video_id}.json"
         if cache_file.exists():
             try:
@@ -327,7 +387,7 @@ class TaskManager:
             except Exception as e:
                 logging.error(f"删除本地最终缓存文件失败: {e}")
 
-        # 2. 删除本地原始识别 JSON 缓存文件 (RAW)
+        # 2.2 删除本地原始识别 JSON 缓存文件 (RAW)
         raw_cache_file = RAW_CACHE_DIR / f"{video_id}.json"
         if raw_cache_file.exists():
             try:
@@ -357,6 +417,208 @@ class TaskManager:
             'preserving': 'audio_file'
         }
 
+    def _streaming_download_and_transcribe(self, video_url, video_id, task_id, language, initial_prompt, domain):
+        """
+        流式下载+识别：边下载边识别边推送字幕
+        对于长视频使用 yt-dlp --download-sections 分段下载，每段下载完立即识别
+        对于短视频或已缓存音频则走传统路径
+        """
+        import math
+        
+        # 1. 检查本地是否已有完整音频缓存
+        cached_audio = str(TEMP_DIR / f"{video_id}.mp3")
+        if os.path.exists(cached_audio) and os.path.getsize(cached_audio) > 0:
+            logging.info(f"[{task_id}] 音频已缓存，使用本地分段识别")
+            audio_path = cached_audio
+            if domain == 'music':
+                self.update_task(task_id, 'transcribing', 25, '正在进行人声增强预处理...')
+                audio_path = enhance_audio_for_speech(audio_path)
+            audio_duration = get_audio_duration(audio_path)
+            if audio_duration > 300:
+                return self._chunked_transcribe(audio_path, task_id, language, initial_prompt)
+            else:
+                self.update_task(task_id, 'transcribing', 30, '正在使用 Whisper 识别...')
+                return self._transcribe_locally(audio_path, task_id, language, initial_prompt=initial_prompt)
+        
+        # 2. 获取视频总时长（不下载，仅读取元信息）
+        self.update_task(task_id, 'downloading', 5, '正在获取视频信息...')
+        video_duration = self._get_video_duration_fast(video_url)
+        
+        if video_duration <= 300:
+            # 短视频：直接完整下载 + 识别
+            audio_path = self._download_audio(video_url, task_id)
+            if domain == 'music':
+                self.update_task(task_id, 'transcribing', 25, '正在进行人声增强预处理...')
+                audio_path = enhance_audio_for_speech(audio_path)
+            self.update_task(task_id, 'transcribing', 30, '正在使用 Whisper 识别...')
+            return self._transcribe_locally(audio_path, task_id, language, initial_prompt=initial_prompt)
+        
+        # 3. 长视频：分段下载 + 逐段识别
+        segment_duration = 300  # 5 分钟/段
+        num_sections = math.ceil(video_duration / segment_duration)
+        logging.info(f"[{task_id}] 视频时长 {video_duration:.0f}s，将分 {num_sections} 段边下载边识别")
+        
+        subtitles = []
+        detected_lang = None
+        
+        try:
+            for i in range(num_sections):
+                section_num = i + 1
+                start_sec = i * segment_duration
+                end_sec = min((i + 1) * segment_duration, video_duration)
+                
+                # 下载该段
+                dl_progress = 5 + int((i / num_sections) * 90)
+                self.update_task(task_id, 'downloading', dl_progress,
+                    f'正在下载第 {section_num}/{num_sections} 段...',
+                    subtitles=subtitles if subtitles else None, language=detected_lang)
+                
+                section_path = self._download_audio_section(
+                    video_url, video_id, start_sec, end_sec, i, task_id)
+                
+                # 音乐预处理
+                if domain == 'music':
+                    section_path = enhance_audio_for_speech(section_path)
+                
+                # 识别该段
+                asr_progress = 5 + int(((i + 0.5) / num_sections) * 90)
+                self.update_task(task_id, 'transcribing', asr_progress,
+                    f'正在识别第 {section_num}/{num_sections} 段...',
+                    subtitles=subtitles if subtitles else None, language=detected_lang)
+                
+                chunk_subs, chunk_lang = self._transcribe_locally(
+                    section_path, task_id, language, initial_prompt=initial_prompt)
+                
+                if not detected_lang:
+                    detected_lang = chunk_lang
+                
+                # 修正时间偏移
+                for sub in chunk_subs:
+                    sub['start'] = round(sub['start'] + start_sec, 2)
+                    sub['end'] = round(sub['end'] + start_sec, 2)
+                
+                subtitles.extend(chunk_subs)
+                
+                # 使用上一段的最后几条字幕作为下一段的提示词，保持上下文连贯
+                if chunk_subs:
+                    last_texts = [s['text'] for s in chunk_subs[-5:]]
+                    initial_prompt = " ".join(last_texts)
+                
+                # 推送增量字幕
+                done_progress = 5 + int((section_num / num_sections) * 90)
+                self.update_task(task_id, 'transcribing', done_progress,
+                    f'已完成 {section_num}/{num_sections} 段，共 {len(subtitles)} 条字幕',
+                    subtitles=subtitles, language=detected_lang)
+                logging.info(f"[{task_id}] 第 {section_num}/{num_sections} 段完成，累计 {len(subtitles)} 条字幕")
+                
+                # 清理分段临时文件
+                try: os.remove(section_path)
+                except: pass
+            
+            return subtitles, detected_lang
+        
+        except Exception as e:
+            logging.warning(f"[{task_id}] 流式下载失败 ({e})，回退到完整下载")
+            audio_path = self._download_audio(video_url, task_id)
+            if domain == 'music':
+                audio_path = enhance_audio_for_speech(audio_path)
+            audio_duration = get_audio_duration(audio_path)
+            if audio_duration > 300:
+                return self._chunked_transcribe(audio_path, task_id, language, initial_prompt)
+            else:
+                self.update_task(task_id, 'transcribing', 30, '正在使用 Whisper 识别...')
+                return self._transcribe_locally(audio_path, task_id, language, initial_prompt=initial_prompt)
+
+    def _get_video_duration_fast(self, video_url):
+        """快速获取视频总时长（不下载视频，仅读取元数据）"""
+        try:
+            cmd = ['yt-dlp', '--print', 'duration', '--no-playlist', '--no-warnings', video_url]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, encoding='utf-8', errors='ignore')
+            if result.returncode == 0 and result.stdout.strip():
+                return float(result.stdout.strip())
+        except Exception as e:
+            logging.warning(f"获取视频时长失败: {e}")
+        return 0
+
+    def _download_audio_section(self, video_url, video_id, start_sec, end_sec, section_idx, task_id):
+        """下载视频指定时间段的音频（yt-dlp --download-sections）"""
+        output = str(TEMP_DIR / f"sec_{section_idx:03d}_{video_id}.mp3")
+        
+        def fmt_time(sec):
+            h, m, s = int(sec // 3600), int((sec % 3600) // 60), int(sec % 60)
+            return f"{h}:{m:02d}:{s:02d}"
+        
+        section_spec = f"*{fmt_time(start_sec)}-{fmt_time(end_sec)}"
+        cmd = [
+            'yt-dlp', '--no-playlist', '--no-cache-dir',
+            '--download-sections', section_spec,
+            '-x', '--audio-format', 'mp3', '--audio-quality', '128K',
+            '--cookies', 'cookies.txt',
+            '--force-overwrites',
+            '-o', output,
+            video_url
+        ]
+        
+        logging.info(f"[{task_id}] 下载分段 {section_idx}: {section_spec}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, encoding='utf-8', errors='ignore')
+        
+        if result.returncode != 0:
+            raise Exception(f"分段下载失败 (section {section_idx}): {result.stderr[:200] if result.stderr else '未知错误'}")
+        
+        # 检查输出文件（yt-dlp 可能给文件名加后缀）
+        if os.path.exists(output) and os.path.getsize(output) > 0:
+            return output
+        for f in TEMP_DIR.glob(f"sec_{section_idx:03d}_{video_id}*"):
+            if f.suffix in ['.mp3', '.m4a', '.webm', '.opus'] and os.path.getsize(f) > 0:
+                return str(f)
+        raise Exception(f"分段下载完成但未找到文件 (section {section_idx})")
+
+    def _chunked_transcribe(self, audio_path, task_id, language, initial_prompt):
+        """已有完整音频时的分段识别（切分 + 逐段识别 + 增量推送）"""
+        self.update_task(task_id, 'transcribing', 25, '正在切分音频为多段...')
+        chunks = split_audio(audio_path, segment_duration=300)
+        logging.info(f"[{task_id}] 音频已切分为 {len(chunks)} 段")
+        
+        subtitles = []
+        detected_lang = None
+        
+        for chunk_idx, chunk_path in enumerate(chunks):
+            chunk_num = chunk_idx + 1
+            time_offset = chunk_idx * 300
+            progress = 30 + int((chunk_idx / len(chunks)) * 65)
+            self.update_task(task_id, 'transcribing', progress,
+                f'正在识别第 {chunk_num}/{len(chunks)} 段...',
+                subtitles=subtitles if subtitles else None, language=detected_lang)
+            
+            chunk_subs, chunk_lang = self._transcribe_locally(
+                chunk_path, task_id, language, initial_prompt=initial_prompt)
+            
+            if not detected_lang:
+                detected_lang = chunk_lang
+            
+            for sub in chunk_subs:
+                sub['start'] = round(sub['start'] + time_offset, 2)
+                sub['end'] = round(sub['end'] + time_offset, 2)
+            
+            subtitles.extend(chunk_subs)
+            
+            # 使用上一段的最后几条字幕作为下一段的提示词，保持上下文连贯
+            if chunk_subs:
+                last_texts = [s['text'] for s in chunk_subs[-5:]]
+                initial_prompt = " ".join(last_texts)
+            
+            done_progress = 30 + int((chunk_num / len(chunks)) * 65)
+            self.update_task(task_id, 'transcribing', done_progress,
+                f'已完成 {chunk_num}/{len(chunks)} 段，共 {len(subtitles)} 条字幕',
+                subtitles=subtitles, language=detected_lang)
+            logging.info(f"[{task_id}] 第 {chunk_num}/{len(chunks)} 段识别完成，累计 {len(subtitles)} 条字幕")
+            
+            if chunk_path != audio_path:
+                try: os.remove(chunk_path)
+                except: pass
+        
+        return subtitles, detected_lang
+
     def _download_audio(self, video_url, task_id):
         self.update_task(task_id, 'downloading', 10, '正在下载音频...')
         video_id = get_video_id(video_url)
@@ -370,7 +632,8 @@ class TaskManager:
 
         start_time = time.time()
         # 增加 --no-playlist 确保只下载单个视频，防止下载整个列表导致识别错乱
-        cmd = ['yt-dlp', '--no-playlist', '-x', '--audio-format', 'mp3', '--audio-quality', '128K', '-o', output, video_url]
+        # 使用 --cookies cookies.txt 解决 Chromium DPAPI 加密导致的提取失败
+        cmd = ['yt-dlp', '--no-playlist', '-x', '--audio-format', 'mp3', '--audio-quality', '128K', '--cookies', 'cookies.txt', '-o', output, video_url]
         
         max_retries = 3
         for attempt in range(max_retries):
@@ -379,11 +642,12 @@ class TaskManager:
                 logging.info(f"[{task_id}] 音频下载完成, 耗时: {time.time() - start_time:.2f}s")
                 return output
             except subprocess.CalledProcessError as e:
+                err_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
                 if attempt < max_retries - 1:
-                    logging.warning(f"[{task_id}] 下载失败, 正在重试 ({attempt + 1}/{max_retries}): {e.stderr.decode() if e.stderr else str(e)}")
+                    logging.warning(f"[{task_id}] 下载失败, 正在重试 ({attempt + 1}/{max_retries}): {err_msg}")
                     time.sleep(2 * (attempt + 1))
                 else:
-                    raise Exception(f"音频下载最终失败: {e.stderr.decode() if e.stderr else str(e)}")
+                    raise Exception(f"音频下载最终失败: {err_msg}")
 
     def _transcribe_locally(self, audio_path, task_id, language, initial_prompt=None):
         self.update_task(task_id, 'transcribing', 50, '正在本地识别...')
@@ -698,7 +962,6 @@ class TaskManager:
         
         all_subtitles = []
         detected_lang = language if language != 'auto' else 'zh'
-        current_time_offset = 0
         
         # 使用最新的 whisper-large-v3-turbo 模型
         url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/openai/whisper-large-v3-turbo"
@@ -711,6 +974,7 @@ class TaskManager:
             import base64
             for i, chunk_path in enumerate(chunks):
                 chunk_idx = i + 1
+                current_time_offset = i * 300
                 progress = 48 + int((i / len(chunks)) * 45)
                 self.update_task(task_id, 'transcribing', progress, f'正在识别第 {chunk_idx}/{len(chunks)} 个分段...')
                 
@@ -774,9 +1038,6 @@ class TaskManager:
                             })
                     
                     all_subtitles.extend(chunk_subs)
-                    
-                    # 更新时间偏移
-                    current_time_offset += get_audio_duration(chunk_path)
                     
                     # 清理分理出的临时片段文件
                     if chunk_path != audio_path:

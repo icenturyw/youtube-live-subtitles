@@ -50,6 +50,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const clearCacheBtn = document.getElementById('clearCacheBtn'); // 新增清除缓存按钮
     const llmCorrection = document.getElementById('llmCorrection'); // LLM 纠错开关
 
+    // 视频下载元素
+    const downloadVideoBtn = document.getElementById('downloadVideoBtn');
+    const resolutionSelect = document.getElementById('resolutionSelect');
+    const downloadSection = document.getElementById('downloadSection');
+    const downloadStatus = document.getElementById('downloadStatus');
+    const downloadStatusText = document.getElementById('downloadStatusText');
+
     let currentVideoId = null;
     let subtitlesVisible = true;
     let currentSubtitles = null;
@@ -60,16 +67,166 @@ document.addEventListener('DOMContentLoaded', async () => {
     await checkService();
     await checkExistingSubtitles();
 
-    // 检查是否显示批量按钮
+    // 检查是否显示批量按钮和下载区域
     const { isYouTube, playlistId } = await checkYouTubePage();
     if (isYouTube && playlistId) {
         batchBtn.style.display = 'flex';
+    }
+    // 仅在 YouTube 视频页面显示下载区域
+    if (downloadSection) {
+        downloadSection.style.display = isYouTube ? 'block' : 'none';
     }
 
     setupProgressListener();
 
     // 初始化折叠面板交互
     setupCollapsiblePanels();
+
+    // ============ 术语词典管理 ============
+    const lexiconToggle = document.getElementById('lexiconToggle');
+    const lexiconPanel = document.getElementById('lexiconPanel');
+    const lexiconList = document.getElementById('lexiconList');
+    const lexiconSave = document.getElementById('lexiconSave');
+
+    // 切换面板显示
+    if (lexiconToggle) {
+        lexiconToggle.addEventListener('click', () => {
+            const isHidden = lexiconPanel.style.display === 'none';
+            lexiconPanel.style.display = isHidden ? 'block' : 'none';
+            if (isHidden) loadLexicon();
+        });
+    }
+
+    // 加载词典列表
+    async function loadLexicon() {
+        const serverHost = serverHostInput.value || 'http://127.0.0.1:8765';
+        try {
+            const res = await fetch(`${serverHost.replace(/\/$/, '')}/lexicon`);
+            if (!res.ok) return;
+            const data = await res.json();
+            renderLexiconList(data);
+            updateDomainSelect(data);
+        } catch (e) {
+            lexiconList.innerHTML = '<div style="color:var(--text-secondary);">无法连接服务器</div>';
+        }
+    }
+
+    // 渲染词典列表
+    function renderLexiconList(data) {
+        const customDomains = Object.entries(data).filter(([_, v]) => !v.builtin);
+        if (customDomains.length === 0) {
+            lexiconList.innerHTML = '<div style="color:var(--text-secondary);">暂无自定义词典</div>';
+            return;
+        }
+        lexiconList.innerHTML = customDomains.map(([key, val]) => {
+            const termPreview = (val.terms || '').substring(0, 40) + ((val.terms || '').length > 40 ? '...' : '');
+            const replCount = Object.keys(val.replacements || {}).length;
+            return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid var(--border);">
+                <div>
+                    <strong>${val.label || key}</strong>
+                    <span style="color:var(--text-secondary);margin-left:4px;">(${key})</span>
+                    <div style="color:var(--text-secondary);font-size:10px;">${termPreview}${replCount ? ` | ${replCount} 条替换` : ''}</div>
+                </div>
+                <button class="lexicon-delete-btn" data-domain="${key}" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:14px;" title="删除">🗑️</button>
+            </div>`;
+        }).join('');
+
+        // 绑定删除事件
+        lexiconList.querySelectorAll('.lexicon-delete-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const domain = btn.dataset.domain;
+                if (!confirm(`确定删除词典 "${domain}" 吗？`)) return;
+                const serverHost = serverHostInput.value || 'http://127.0.0.1:8765';
+                const authKey = authKeyInput.value;
+                const headers = {};
+                if (authKey) headers['X-API-Key'] = authKey;
+                try {
+                    await fetch(`${serverHost.replace(/\/$/, '')}/lexicon/${domain}`, { method: 'DELETE', headers });
+                    loadLexicon();
+                } catch (e) {
+                    alert('删除失败');
+                }
+            });
+        });
+    }
+
+    // 动态更新 domain 下拉框
+    function updateDomainSelect(data) {
+        const currentValue = domainSelect.value;
+        // 保留内置选项，移除之前动态添加的
+        domainSelect.querySelectorAll('option[data-custom]').forEach(opt => opt.remove());
+        // 添加自定义领域
+        Object.entries(data).filter(([_, v]) => !v.builtin).forEach(([key, val]) => {
+            const opt = document.createElement('option');
+            opt.value = key;
+            opt.textContent = `${val.label || key} (自定义)`;
+            opt.dataset.custom = 'true';
+            domainSelect.appendChild(opt);
+        });
+        // 恢复之前的选择
+        if (currentValue) domainSelect.value = currentValue;
+    }
+
+    // 保存新领域
+    if (lexiconSave) {
+        lexiconSave.addEventListener('click', async () => {
+            const domain = document.getElementById('lexiconDomain').value.trim();
+            const label = document.getElementById('lexiconLabel').value.trim();
+            const terms = document.getElementById('lexiconTerms').value.trim();
+            const replacementsText = document.getElementById('lexiconReplacements').value.trim();
+
+            if (!domain) { alert('请输入领域标识'); return; }
+
+            // 解析替换规则（每行 错误词=正确词）
+            const replacements = {};
+            if (replacementsText) {
+                replacementsText.split('\n').forEach(line => {
+                    const parts = line.split('=');
+                    if (parts.length === 2) {
+                        replacements[parts[0].trim()] = parts[1].trim();
+                    }
+                });
+            }
+
+            const serverHost = serverHostInput.value || 'http://127.0.0.1:8765';
+            const authKey = authKeyInput.value;
+            const headers = { 'Content-Type': 'application/json' };
+            if (authKey) headers['X-API-Key'] = authKey;
+
+            try {
+                const res = await fetch(`${serverHost.replace(/\/$/, '')}/lexicon`, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify({ domain, label: label || domain, terms, replacements })
+                });
+                if (res.ok) {
+                    // 清空表单
+                    document.getElementById('lexiconDomain').value = '';
+                    document.getElementById('lexiconLabel').value = '';
+                    document.getElementById('lexiconTerms').value = '';
+                    document.getElementById('lexiconReplacements').value = '';
+                    loadLexicon();
+                } else {
+                    const err = await res.json();
+                    alert(err.detail || '保存失败');
+                }
+            } catch (e) {
+                alert('无法连接服务器');
+            }
+        });
+    }
+
+    // 初始化时尝试加载自定义领域到下拉框
+    try {
+        const serverHost = serverHostInput.value || 'http://127.0.0.1:8765';
+        fetch(`${serverHost.replace(/\/$/, '')}/lexicon`).then(r => r.json()).then(data => {
+            updateDomainSelect(data);
+            // 恢复保存的 domain 选择
+            chrome.storage.local.get('domain', (s) => {
+                if (s.domain) domainSelect.value = s.domain;
+            });
+        }).catch(() => { });
+    } catch (e) { }
 
     // 服务选择变更
     whisperServiceSelect.addEventListener('change', async () => {
@@ -192,6 +349,70 @@ document.addEventListener('DOMContentLoaded', async () => {
             showError('连接本地服务失败');
             batchBtn.disabled = false;
             batchBtn.querySelector('.btn-text').textContent = '批量生成列表字幕';
+        }
+    });
+
+    // 下载视频按钮
+    downloadVideoBtn.addEventListener('click', async () => {
+        const { isYouTube, tab, videoId } = await checkYouTubePage();
+
+        if (!isYouTube || !videoId) {
+            showError('请在 YouTube 视频页面使用下载功能');
+            return;
+        }
+
+        const resolution = resolutionSelect.value;
+        const serverHost = serverHostInput.value || 'http://127.0.0.1:8765';
+        const authKey = authKeyInput.value;
+
+        downloadVideoBtn.disabled = true;
+        downloadVideoBtn.querySelector('.btn-text').textContent = '正在下载...';
+        downloadStatus.style.display = 'block';
+        downloadStatusText.textContent = `⏳ 正在从服务器下载 ${resolution}p 视频，请稍候...`;
+
+        try {
+            const headers = { 'Content-Type': 'application/json' };
+            if (authKey) headers['X-API-Key'] = authKey;
+
+            const response = await fetch(`${serverHost.replace(/\/$/, '')}/download_video`, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({
+                    video_url: `https://www.youtube.com/watch?v=${videoId}`,
+                    resolution: resolution
+                })
+            });
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || '视频下载失败');
+            }
+
+            const data = await response.json();
+            const filename = data.filename;
+
+            // 通过 background.js 使用 chrome.downloads API 下载文件
+            const downloadUrl = `${serverHost.replace(/\/$/, '')}/download_file/${filename}`;
+            chrome.runtime.sendMessage({
+                type: 'downloadVideo',
+                downloadUrl: downloadUrl,
+                filename: filename
+            }, (result) => {
+                if (result && result.error) {
+                    downloadStatusText.textContent = `❌ 下载失败: ${result.error}`;
+                } else {
+                    downloadStatusText.textContent = `✅ 视频已开始下载到本地！`;
+                    setTimeout(() => {
+                        downloadStatus.style.display = 'none';
+                    }, 5000);
+                }
+            });
+
+        } catch (e) {
+            downloadStatusText.textContent = `❌ ${e.message}`;
+        } finally {
+            downloadVideoBtn.disabled = false;
+            downloadVideoBtn.querySelector('.btn-text').textContent = '下载视频';
         }
     });
 
@@ -380,9 +601,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 progressContainer.style.display = 'block';
                 generateBtn.disabled = true;
 
-                // 获取当前 tab 并重新生成
+                // 获取当前 tab 并延迟 1 秒重新生成，给予后台及数据库充足的断开和锁释放时间
                 const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-                await startSubtitleGeneration(tab);
+                setTimeout(async () => {
+                    await startSubtitleGeneration(tab);
+                }, 1000);
 
             } else {
                 const error = await deleteResponse.json();

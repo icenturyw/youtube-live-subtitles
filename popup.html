@@ -51,6 +51,25 @@
         <span class="btn-text">批量生成列表字幕</span>
       </button>
 
+      <!-- 视频下载区域 -->
+      <div class="download-section" id="downloadSection">
+        <div class="download-row">
+          <select class="resolution-select" id="resolutionSelect">
+            <option value="720">720p</option>
+            <option value="1080" selected>1080p</option>
+            <option value="1440">1440p (2K)</option>
+            <option value="2160">2160p (4K)</option>
+          </select>
+          <button class="main-btn download-video-btn" id="downloadVideoBtn">
+            <span class="btn-icon">📥</span>
+            <span class="btn-text">下载视频</span>
+          </button>
+        </div>
+        <div class="download-status" id="downloadStatus" style="display: none;">
+          <span class="download-status-text" id="downloadStatusText"></span>
+        </div>
+      </div>
+
       <!-- 本地文件拖拽识别 -->
       <div class="drop-zone" id="dropZone">
         <div class="drop-zone-content">
@@ -110,6 +129,30 @@
             <option value="medical">医学健康 (症状/诊断等)</option>
             <option value="gaming">游戏电竞 (副本/冷却等)</option>
           </select>
+          <button type="button" id="lexiconToggle"
+            style="font-size: 11px; margin-top: 4px; cursor: pointer; color: var(--primary); background: none; border: none; padding: 0; text-align: left;">📖
+            管理术语词典</button>
+        </div>
+        <!-- 术语词典管理面板 -->
+        <div id="lexiconPanel" class="setting-item"
+          style="display: none; border: 1px solid var(--border); border-radius: 8px; padding: 10px;">
+          <div id="lexiconList" style="margin-bottom: 8px; max-height: 120px; overflow-y: auto; font-size: 11px;"></div>
+          <details>
+            <summary style="cursor: pointer; font-size: 11px; color: var(--primary); margin-bottom: 8px;">➕ 添加新领域
+            </summary>
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <input type="text" id="lexiconDomain" placeholder="领域标识 (英文, 如 aerospace)"
+                style="font-size: 11px; padding: 4px 8px;">
+              <input type="text" id="lexiconLabel" placeholder="显示名称 (如 航空航天)"
+                style="font-size: 11px; padding: 4px 8px;">
+              <textarea id="lexiconTerms" rows="2" placeholder="术语列表，逗号分隔 (如 襟翼，副翼，迎角)"
+                style="font-size: 11px; padding: 4px 8px; resize: vertical;"></textarea>
+              <textarea id="lexiconReplacements" rows="2" placeholder="替换规则，每行一个 (格式: 错误词=正确词)"
+                style="font-size: 11px; padding: 4px 8px; resize: vertical;"></textarea>
+              <button type="button" id="lexiconSave" class="btn btn-primary"
+                style="font-size: 11px; padding: 4px 10px;">保存</button>
+            </div>
+          </details>
         </div>
 
         <div class="setting-item">

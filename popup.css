@@ -258,6 +258,65 @@ header h1 {
   opacity: 0.5;
 }
 
+/* Video Download Section */
+.download-section {
+  margin-bottom: 16px;
+  margin-top: -8px;
+}
+
+.download-row {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.resolution-select {
+  width: 130px;
+  flex-shrink: 0;
+  padding: 10px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.3s ease;
+}
+
+.resolution-select:focus {
+  border-color: var(--accent);
+}
+
+.resolution-select option {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.download-video-btn {
+  flex: 1;
+  margin-bottom: 0 !important;
+  background: linear-gradient(135deg, #10b981, #34d399) !important;
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3) !important;
+}
+
+.download-video-btn:hover:not(:disabled) {
+  box-shadow: 0 8px 25px rgba(16, 185, 129, 0.4) !important;
+}
+
+.download-status {
+  margin-top: 8px;
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.download-status-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
 /* Drop Zone */
 .drop-zone {
   border: 2px dashed var(--border);

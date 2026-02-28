@@ -13,8 +13,9 @@
 - 📡 **实时性能监控** - 详细的步骤耗时日志，任务状态全程追踪，并持久化到 `server.log`
 - 🗄️ **PostgreSQL 云同步** - 使用统一的 PostgreSQL 数据库 (83.229.124.177) 实现多端同步
 - 🔄 **自动补全同步** - 服务启动时自动检测本地 cache 并补全到云端数据库
-- 🛡️ **健壮性增强** - 自动错误重试机制（下载、API 调用），集成 `json-repair` 提升本地模型容错率
-
+- 🛡️ **健壮性增强** - 自动错误重试（下载、API 调用），集成 `json-repair` 及强健的异常连接池池化防断机制
+- 🧹 **内存防爆机制** - 挂载死缓存定时清理线程，防止长时大规模播放列表识别导致的 OOM (Out of Memory)
+- 🔒 **并发 IO 安全** - 基于 UUID 洗牌临时分割音频切片，规避了高并发下 FFmpeg 的锁死和越权覆盖缺陷
 ## 系统要求
 
 - Python 3.10+
@@ -138,6 +139,9 @@ whisper-server/
 
 ### Q: 首次启动很慢？
 A: 首次启动会下载 Whisper 模型（约 150MB），请耐心等待。
+
+### Q: 下载视频时总是报 "Sign in to confirm you're not a bot" 错误？
+A: YouTube 最近的的反爬风控升级。请使用 Edge 或 Chrome 下载 `Get cookies.txt LOCALLY` 插件，在 YouTube 登录状态下点击导出。将得到的文件重命名为 `cookies.txt`，并放在 `whisper-server/` 这个包含 `server.py` 的目录下即可。
 
 ### Q: 识别不准确？
 A: 尝试使用更大的模型（如 `small` 或 `medium`）。

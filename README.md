@@ -1,4 +1,4 @@
-# YouTube Live Subtitles (v2.4.1)
+# YouTube Live Subtitles (v2.4.2)
 
 本项目是一个为 YouTube 视频（尤其是直播和超长视频）生成实时/准实时字幕的工具。支持本地 GPU 加速识别、LLM 智能纠错、多端 Supabase 云同步功能。
 
@@ -15,6 +15,13 @@
 - **🎨 增强型 UI**：全新的折叠面板设计，选项新增“音乐领域”预处理开关，保持界面简洁且功能强大。
 
 ## 🔄 最新更新
+
+### v2.4.2 (2026-02-28) - 并发与高可用加固 🛡️
+- **内存泄漏防御**：针对 `TaskManager` 引入驻留内存定时清理机制（10分钟回收），彻底解决批量处理几百个视频后的服务器物理内存爆炸问题。
+- **高并发连接池稳定**：重构 PostgreSQL 数据库 (`db/postgres_db.py`) 的连接池回收机制。加入防御性的回滚与上下文包裹，杜绝 API 突发报错或网络抖动导致的僵尸连接与 `Lost connection` 假死。
+- **并发 IO 冲撞修复**：在处理超大音频切割转码时 (`utils.py`)，为临时切片文件引入全局唯一 UUID 防碰撞命名，解决相同视频被多线程同时重试引起的 `ffmpeg` 覆盖崩溃。
+- **YouTube 强鉴权支持**：弃用了原本容易引发 DPAPI 解密错误的浏览器级 Cookie 读取，明确支持通过挂载 `cookies.txt` 来绕过 YouTube `HTTP 400 Precondition check failed` 与 `Sign in to confirm you're not a bot` 风控。
+- **多端与 UI 健壮性**：增强前端 `popup.js` 缓存释放防抖机制（1秒时延），避免重请求撞车；优化 Qwen3-ASR 接口，未能识别冷门小语种时安全降级至 `auto` 替代硬编码报错。
 
 ### v2.4.1 (2026-02-04) - 金融博弈，PA 名词精准捕捉 📈
 - **金融 PA 名词库增强**：大幅扩充“金融交易”领域的 Prompt 引导。加入了 **“信号棒、趋势棒、反转、突破、等长运动、楔形、磁吸效应”** 等深入 PA (Price Action) 交易体系的核心术语，解决金融视频中由于语速快导致的专有名词识别漂移。
@@ -59,7 +66,8 @@
 ### 识别服务 (后端)
 1. 进入 `whisper-server` 目录。
 2. 配置 `.env` 文件（填入有效的 PostgreSQL `83.229.124.177` 数据库连接信息）。
-3. 运行 `start.bat` (或直接运行 `python main.py`)。
+3. **[重要]** 登录 YouTube 后，使用浏览器插件（如 Get cookies.txt LOCALLY）将您的 Cookie 导出为 `cookies.txt` 文件，并放置在 `whisper-server/` 根目录下。这将确保您可以正常下载视频并绕过 YouTube 的反爬虫质询。
+4. 运行 `start.bat` (或直接运行 `python main.py`)。
 
 ### 浏览器插件 (前端)
 1. 在开发者模式下加载本项目根目录。

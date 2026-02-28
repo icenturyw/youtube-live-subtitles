@@ -358,7 +358,9 @@ class Qwen3ASREngine:
             if k.lower() == lang_name.lower():
                 return v
                 
-        return 'zh'  # 默认回退
+        # 记录未能识别的特殊语言名称
+        logging.warning(f"[Qwen3-ASR] 未知语言代码映射回退: '{lang_name}' -> 'auto'")
+        return 'auto'  # 安全回退，不应该硬编码为 'zh'
 
 
 # 全局单例
