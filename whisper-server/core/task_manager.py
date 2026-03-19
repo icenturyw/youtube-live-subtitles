@@ -32,6 +32,13 @@ from core.prompts import (
     generate_shared_prompt
 )
 
+# yt-dlp cookie 辅助：仅当 cookies.txt 存在且非空时才传入
+def _yt_cookie_args():
+    cookie_file = Path(__file__).resolve().parent.parent / "cookies.txt"
+    if cookie_file.exists() and cookie_file.stat().st_size > 0:
+        return ['--cookies', str(cookie_file)]
+    return []
+
 
 class TaskManager:
     def __init__(self):
@@ -532,7 +539,10 @@ class TaskManager:
     def _get_video_duration_fast(self, video_url):
         """快速获取视频总时长（不下载视频，仅读取元数据）"""
         try:
-            cmd = ['yt-dlp', '--print', 'duration', '--no-playlist', '--no-warnings', video_url]
+            cmd = ['yt-dlp', '--js-runtimes', 'node', '--print', 'duration', '--no-playlist', '--no-warnings',
+                   '--extractor-args', 'youtube:player_client=web,default']
+            cmd += _yt_cookie_args()
+            cmd.append(video_url)
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, encoding='utf-8', errors='ignore')
             if result.returncode == 0 and result.stdout.strip():
                 return float(result.stdout.strip())
@@ -550,14 +560,15 @@ class TaskManager:
         
         section_spec = f"*{fmt_time(start_sec)}-{fmt_time(end_sec)}"
         cmd = [
-            'yt-dlp', '--no-playlist', '--no-cache-dir',
+            'yt-dlp', '--js-runtimes', 'node', '--no-playlist', '--no-cache-dir',
             '--download-sections', section_spec,
             '-x', '--audio-format', 'mp3', '--audio-quality', '128K',
-            '--cookies', 'cookies.txt',
+            '--extractor-args', 'youtube:player_client=web,default',
             '--force-overwrites',
             '-o', output,
-            video_url
         ]
+        cmd += _yt_cookie_args()
+        cmd.append(video_url)
         
         logging.info(f"[{task_id}] 下载分段 {section_idx}: {section_spec}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, encoding='utf-8', errors='ignore')
@@ -632,8 +643,14 @@ class TaskManager:
 
         start_time = time.time()
         # 增加 --no-playlist 确保只下载单个视频，防止下载整个列表导致识别错乱
-        # 使用 --cookies cookies.txt 解决 Chromium DPAPI 加密导致的提取失败
-        cmd = ['yt-dlp', '--no-playlist', '-x', '--audio-format', 'mp3', '--audio-quality', '128K', '--cookies', 'cookies.txt', '-o', output, video_url]
+        # 使用 --extractor-args 绕过 JS runtime 依赖，--cookies 解决 bot 检测
+        cmd = [
+            'yt-dlp', '--js-runtimes', 'node', '--no-playlist', '-x', '--audio-format', 'mp3', '--audio-quality', '128K',
+            '--extractor-args', 'youtube:player_client=web,default',
+            '-o', output,
+        ]
+        cmd += _yt_cookie_args()
+        cmd.append(video_url)
         
         max_retries = 3
         for attempt in range(max_retries):

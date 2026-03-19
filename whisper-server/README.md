@@ -16,11 +16,13 @@
 - 🛡️ **健壮性增强** - 自动错误重试（下载、API 调用），集成 `json-repair` 及强健的异常连接池池化防断机制
 - 🧹 **内存防爆机制** - 挂载死缓存定时清理线程，防止长时大规模播放列表识别导致的 OOM (Out of Memory)
 - 🔒 **并发 IO 安全** - 基于 UUID 洗牌临时分割音频切片，规避了高并发下 FFmpeg 的锁死和越权覆盖缺陷
+- 🌐 **yt-dlp 兼容增强** - 所有下载命令统一注入 `--extractor-args youtube:player_client=web,default`，无需安装 deno 即可正常提取；cookie 文件按需传入，空文件不再触发错误
 ## 系统要求
 
 - Python 3.10+
 - FFmpeg（用于音频处理）
 - CUDA（可选，GPU 加速）
+- yt-dlp 2025.1.0+（建议保持最新：`pip install -U yt-dlp`）
 
 ## 安装步骤
 
@@ -142,6 +144,9 @@ A: 首次启动会下载 Whisper 模型（约 150MB），请耐心等待。
 
 ### Q: 下载视频时总是报 "Sign in to confirm you're not a bot" 错误？
 A: YouTube 最近的的反爬风控升级。请使用 Edge 或 Chrome 下载 `Get cookies.txt LOCALLY` 插件，在 YouTube 登录状态下点击导出。将得到的文件重命名为 `cookies.txt`，并放在 `whisper-server/` 这个包含 `server.py` 的目录下即可。
+
+### Q: 报 "No supported JavaScript runtime could be found" 警告？
+A: 无需安装 deno。服务已通过 `--extractor-args youtube:player_client=web,default` 绕过 JS runtime 依赖，该警告不影响正常使用。
 
 ### Q: 识别不准确？
 A: 尝试使用更大的模型（如 `small` 或 `medium`）。
